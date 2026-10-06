@@ -1,157 +1,230 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, StatusBar } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, Alert, RefreshControl } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useEnergy } from '../context/EnergyContext';
+import { useTheme, useThemedStyles, ThemeColors } from '../context/ThemeContext';
+import AccessibleTouchable from '../components/AccessibleTouchable';
+import EmptyState from '../components/EmptyState';
+import FocusAwareStatusBar from '../components/FocusAwareStatusBar';
+import { SkeletonCard } from '../components/Skeleton';
+import WeatherWidget from '../components/WeatherWidget';
+import { EnergyTip } from '../types';
 import { formatEnergy } from '../utils/energy';
 import { speakEnergyTip, stopSpeaking } from '../utils/voice';
-import { Colors, Typography, Spacing, Radius, Shadows } from '../theme';
+import { Typography, Spacing, Radius, Shadows } from '../theme';
 
-const PRIORITY_COLORS: Record<string, string> = { high: '#EF4444', medium: '#F59E0B', low: '#10B981' };
+type Priority = EnergyTip['priority'];
 
-const TipsScreen = () => {
-  const { tips, weatherData, settings } = useEnergy();
+const PRIORITY_GROUPS: { priority: Priority; title: string }[] = [
+  { priority: 'high', title: 'High Priority' },
+  { priority: 'medium', title: 'Medium Priority' },
+  { priority: 'low', title: 'Low Priority' },
+];
+
+const describeTip = (tip: EnergyTip, priorityTitle: string) =>
+  [
+    tip.title,
+    priorityTitle,
+    tip.isPersonalized ? 'Personalized for you' : null,
+    tip.description,
+    `Category: ${tip.category}`,
+    `Saves up to ${formatEnergy(tip.potentialSavings)} per month`,
+  ]
+    .filter(Boolean)
+    .join('. ');
+
+const TipsScreen = ({ navigation }: any) => {
+  const { tips, weatherData, isWeatherLoading, refreshWeatherData, settings } = useEnergy(
+    'tips',
+    'weatherData',
+    'isWeatherLoading',
+    'refreshWeatherData',
+    'settings',
+  );
+  const { colors } = useTheme();
+  const s = useThemedStyles(createStyles);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const handleSpeak = async (tip: typeof tips[0]) => {
+  const groups = useMemo(
+    () =>
+      PRIORITY_GROUPS.map((group) => ({
+        ...group,
+        items: tips.filter((tip) => tip.priority === group.priority),
+      })).filter((group) => group.items.length > 0),
+    [tips],
+  );
+  const totalSavings = useMemo(() => tips.reduce((sum, tip) => sum + tip.potentialSavings, 0), [tips]);
+
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      await refreshWeatherData();
+    } catch (error) {
+      // Keep showing the last reading; the store already logs fetch failures
+      console.warn('Weather refresh failed:', error);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [refreshWeatherData]);
+
+  const handleSpeak = async (tip: EnergyTip) => {
     if (!settings.voiceEnabled) { Alert.alert('Voice Disabled', 'Enable voice in Settings'); return; }
     if (speakingId === tip.id) { await stopSpeaking(); setSpeakingId(null); }
     else { setSpeakingId(tip.id); await speakEnergyTip(tip.title, tip.description, tip.potentialSavings); setSpeakingId(null); }
   };
 
-  const groups: [string, string, typeof tips][] = [
-    ['High Priority', 'high', tips.filter(t => t.priority === 'high')],
-    ['Medium Priority', 'medium', tips.filter(t => t.priority === 'medium')],
-    ['Low Priority', 'low', tips.filter(t => t.priority === 'low')],
-  ];
+  const dotStyles = { high: s.dotHigh, medium: s.dotMedium, low: s.dotLow };
 
   return (
-    <ScrollView style={s.screen} showsVerticalScrollIndicator={false}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.dark} />
-      <LinearGradient colors={['#0B1120', '#162032']} style={s.header}>
+    <ScrollView
+      style={s.screen}
+      showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl
+          refreshing={isRefreshing}
+          onRefresh={handleRefresh}
+          tintColor={colors.primary}
+          colors={[colors.primary]}
+          progressBackgroundColor={colors.card}
+        />
+      }
+    >
+      <FocusAwareStatusBar variant="hero" />
+      <LinearGradient colors={colors.heroGradient} style={s.header}>
         <Text style={s.headerLabel}>ENERGY TIPS</Text>
-        <Text style={s.headerTitle}>Smart Savings</Text>
+        <Text style={s.headerTitle} accessibilityRole="header">Smart Savings</Text>
       </LinearGradient>
 
       <View style={s.body}>
-        {/* Weather */}
-        {weatherData && (
-          <View style={s.weatherCard}>
-            <View style={s.weatherLeft}>
-              <Text style={s.weatherIcon}>
-                {weatherData.condition === 'Clear' ? '☀️' : weatherData.condition === 'Cloudy' ? '☁️' : '🌤️'}
-              </Text>
-              <View>
-                <Text style={s.weatherTemp}>{weatherData.temperature}°C</Text>
-                <Text style={s.weatherCond}>{weatherData.condition}</Text>
-              </View>
-            </View>
-            <View style={s.weatherMetaWrap}>
-              <Text style={s.weatherMeta}>{weatherData.location}</Text>
-              <Text style={s.weatherMeta}>{weatherData.humidity}% humidity</Text>
-              <Text style={s.weatherSource}>{weatherData.source === 'live' ? 'Live weather' : 'Offline seasonal estimate'}</Text>
-            </View>
+        {/* Weather — pull down to refresh; the widget reads as one summary for screen readers */}
+        {weatherData ? (
+          <View style={s.weather}>
+            <WeatherWidget weather={weatherData} />
           </View>
-        )}
+        ) : isWeatherLoading ? (
+          <SkeletonCard lines={2} label="Loading weather" style={s.weather} />
+        ) : null}
 
-        {/* Summary */}
-        <View style={s.summaryCard}>
-          <Text style={s.summaryVal}>{tips.length}</Text>
-          <Text style={s.summaryLbl}>tips available</Text>
-          {tips.length > 0 && (
-            <Text style={s.summaryPot}>
-              Save up to {formatEnergy(tips.reduce((s, t) => s + t.potentialSavings, 0))}/mo
-            </Text>
-          )}
-        </View>
+        {tips.length > 0 ? (
+          <>
+            {/* Summary */}
+            <View
+              style={s.summaryCard}
+              accessible
+              accessibilityLabel={`${tips.length} ${tips.length === 1 ? 'tip' : 'tips'} available. Save up to ${formatEnergy(totalSavings)} per month`}
+            >
+              <Text style={s.summaryVal}>{tips.length}</Text>
+              <Text style={s.summaryLbl}>tips available</Text>
+              <Text style={s.summaryPot}>Save up to {formatEnergy(totalSavings)}/mo</Text>
+            </View>
 
-        {/* Tips */}
-        {groups.map(([title, priority, items]) =>
-          items.length > 0 ? (
-            <View key={priority} style={s.section}>
-              <View style={s.secHeader}>
-                <View style={[s.priorityDot, { backgroundColor: PRIORITY_COLORS[priority] }]} />
-                <Text style={s.secTitle}>{title}</Text>
-                <View style={s.countBadge}>
-                  <Text style={s.countTxt}>{items.length}</Text>
+            {/* Tips */}
+            {groups.map(({ priority, title, items }) => (
+              <View key={priority} style={s.section}>
+                <View
+                  style={s.secHeader}
+                  accessible
+                  accessibilityRole="header"
+                  accessibilityLabel={`${title}, ${items.length} ${items.length === 1 ? 'tip' : 'tips'}`}
+                >
+                  <View style={[s.priorityDot, dotStyles[priority]]} />
+                  <Text style={s.secTitle}>{title}</Text>
+                  <View style={s.countBadge}>
+                    <Text style={s.countTxt}>{items.length}</Text>
+                  </View>
                 </View>
-              </View>
-              {items.map(tip => (
-                <View key={tip.id} style={s.tipCard}>
-                  <View style={s.tipTop}>
-                    <Text style={s.tipTitle}>{tip.title}</Text>
-                    <View style={s.tipActions}>
-                      {tip.isPersonalized && (
-                        <View style={s.forYou}><Text style={s.forYouTxt}>For You</Text></View>
-                      )}
-                      <TouchableOpacity onPress={() => handleSpeak(tip)} style={s.voiceBtn}>
-                        <Text style={s.voiceIcon}>{speakingId === tip.id ? '🔊' : '🔈'}</Text>
-                      </TouchableOpacity>
+                {items.map((tip) => {
+                  const isSpeaking = speakingId === tip.id;
+                  return (
+                    <View key={tip.id} style={s.tipCard}>
+                      <View style={s.tipTop}>
+                        {/* The title carries the whole card's text so the card reads as one item plus its button */}
+                        <Text style={s.tipTitle} accessibilityLabel={describeTip(tip, title)}>{tip.title}</Text>
+                        <View style={s.tipActions}>
+                          {tip.isPersonalized && (
+                            <View style={s.forYou} importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
+                              <Text style={s.forYouTxt}>For You</Text>
+                            </View>
+                          )}
+                          <AccessibleTouchable
+                            label={isSpeaking ? `Stop reading ${tip.title}` : `Read ${tip.title} aloud`}
+                            hint={settings.voiceEnabled ? undefined : 'Voice is turned off. Enable it in Settings.'}
+                            onPress={() => handleSpeak(tip)}
+                            style={s.voiceBtn}
+                          >
+                            <Text style={s.voiceIcon}>{isSpeaking ? '🔊' : '🔈'}</Text>
+                          </AccessibleTouchable>
+                        </View>
+                      </View>
+                      <View importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
+                        <Text style={s.tipDesc}>{tip.description}</Text>
+                        <View style={s.tipFooter}>
+                          <View style={s.catTag}><Text style={s.catTxt}>{tip.category}</Text></View>
+                          <Text style={s.saveTxt}>Save {formatEnergy(tip.potentialSavings)}/mo</Text>
+                        </View>
+                      </View>
                     </View>
-                  </View>
-                  <Text style={s.tipDesc}>{tip.description}</Text>
-                  <View style={s.tipFooter}>
-                    <View style={s.catTag}><Text style={s.catTxt}>{tip.category}</Text></View>
-                    <Text style={s.saveTxt}>Save {formatEnergy(tip.potentialSavings)}/mo</Text>
-                  </View>
-                </View>
-              ))}
-            </View>
-          ) : null
-        )}
-
-        {tips.length === 0 && (
-          <View style={s.emptyCard}>
-            <Text style={s.emptyIcon}>💡</Text>
-            <Text style={s.emptyTitle}>No Tips Yet</Text>
-            <Text style={s.emptyBody}>Add appliances for personalized tips</Text>
-          </View>
+                  );
+                })}
+              </View>
+            ))}
+          </>
+        ) : (
+          <EmptyState
+            variant="inline"
+            icon="💡"
+            title="No tips yet"
+            body="Add the appliances you use and SaveVolt will suggest personalized ways to save, ranked by impact."
+            primaryAction={{
+              label: 'Add an appliance',
+              hint: 'Opens the add appliance form',
+              onPress: () => navigation.navigate('Track', { screen: 'AddAppliance', initial: false }),
+            }}
+          />
         )}
       </View>
     </ScrollView>
   );
 };
 
-const s = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: Colors.background },
-  header: { paddingTop: 54, paddingBottom: 28, paddingHorizontal: Spacing.page, alignItems: 'center' },
-  headerLabel: { ...Typography.overline, color: Colors.primary, marginBottom: 4 },
-  headerTitle: { ...Typography.displaySmall, color: '#fff' },
-  body: { padding: Spacing.page },
-  weatherCard: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: Colors.card, borderRadius: Radius.card, padding: 16, marginBottom: 14, ...Shadows.sm },
-  weatherLeft: { flexDirection: 'row', alignItems: 'center' },
-  weatherIcon: { fontSize: 40, marginRight: 12 },
-  weatherTemp: { ...Typography.h1, color: Colors.text },
-  weatherCond: { ...Typography.bodySmall, color: Colors.textSecondary },
-  weatherMeta: { ...Typography.bodySmall, color: Colors.textMuted, marginBottom: 2 },
-  weatherMetaWrap: { alignItems: 'flex-end' },
-  weatherSource: { ...Typography.labelSmall, color: Colors.primaryDark, marginTop: 3 },
-  summaryCard: { backgroundColor: Colors.card, borderRadius: Radius.card, padding: 20, alignItems: 'center', ...Shadows.md, marginBottom: 20 },
-  summaryVal: { ...Typography.displayMedium, color: Colors.primary },
-  summaryLbl: { ...Typography.label, color: Colors.textSecondary, marginTop: 2 },
-  summaryPot: { ...Typography.bodySmall, color: Colors.textMuted, marginTop: 8 },
-  section: { marginBottom: 10 },
-  secHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
-  priorityDot: { width: 10, height: 10, borderRadius: 5, marginRight: 10 },
-  secTitle: { ...Typography.h3, color: Colors.text, flex: 1 },
-  countBadge: { width: 26, height: 26, borderRadius: 13, backgroundColor: Colors.background, justifyContent: 'center', alignItems: 'center' },
-  countTxt: { ...Typography.labelSmall, color: Colors.textSecondary },
-  tipCard: { backgroundColor: Colors.card, borderRadius: Radius.card, padding: 16, marginBottom: 10, ...Shadows.sm },
-  tipTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 },
-  tipTitle: { ...Typography.h3, color: Colors.text, flex: 1, marginRight: 8 },
-  tipActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  forYou: { backgroundColor: '#FEF3C7', borderRadius: Radius.pill, paddingHorizontal: 8, paddingVertical: 3 },
-  forYouTxt: { ...Typography.labelSmall, color: '#92400E' },
-  voiceBtn: { padding: 4 },
-  voiceIcon: { fontSize: 18 },
-  tipDesc: { ...Typography.bodyMedium, color: Colors.textSecondary, lineHeight: 20, marginBottom: 10 },
-  tipFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  catTag: { backgroundColor: Colors.background, borderRadius: Radius.sm, paddingHorizontal: 10, paddingVertical: 4 },
-  catTxt: { ...Typography.labelSmall, color: Colors.textSecondary },
-  saveTxt: { ...Typography.labelSmall, color: Colors.primaryDark },
-  emptyCard: { alignItems: 'center', padding: 40 },
-  emptyIcon: { fontSize: 48, marginBottom: 12 },
-  emptyTitle: { ...Typography.h2, color: Colors.text, marginBottom: 6 },
-  emptyBody: { ...Typography.bodyMedium, color: Colors.textSecondary },
-});
+const createStyles = (c: ThemeColors) => {
+  // Neon green is too light for text on light surfaces; the deeper shade keeps the accent readable
+  return StyleSheet.create({
+    screen: { flex: 1, backgroundColor: c.background },
+    header: { paddingTop: 54, paddingBottom: 28, paddingHorizontal: Spacing.page, alignItems: 'center' },
+    headerLabel: { ...Typography.overline, color: c.primary, marginBottom: 4 },
+    headerTitle: { ...Typography.displaySmall, color: c.textOnDark },
+    body: { padding: Spacing.page },
+    weather: { marginBottom: 14 },
+    summaryCard: { backgroundColor: c.card, borderRadius: Radius.card, padding: 20, alignItems: 'center', ...Shadows.md, marginBottom: 20 },
+    summaryVal: { ...Typography.displayMedium, color: c.primaryText },
+    summaryLbl: { ...Typography.label, color: c.textSecondary, marginTop: 2 },
+    summaryPot: { ...Typography.bodySmall, color: c.textMuted, marginTop: 8 },
+    section: { marginBottom: 10 },
+    secHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
+    priorityDot: { width: 10, height: 10, borderRadius: 5, marginRight: 10 },
+    dotHigh: { backgroundColor: c.danger },
+    dotMedium: { backgroundColor: c.warning },
+    dotLow: { backgroundColor: c.success },
+    secTitle: { ...Typography.h3, color: c.text, flex: 1 },
+    countBadge: { width: 26, height: 26, borderRadius: 13, backgroundColor: c.background, justifyContent: 'center', alignItems: 'center' },
+    countTxt: { ...Typography.labelSmall, color: c.textSecondary },
+    tipCard: { backgroundColor: c.card, borderRadius: Radius.card, padding: 16, marginBottom: 10, ...Shadows.sm },
+    tipTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 },
+    tipTitle: { ...Typography.h3, color: c.text, flex: 1, marginRight: 8 },
+    tipActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    forYou: { backgroundColor: c.warningSoft, borderRadius: Radius.pill, paddingHorizontal: 8, paddingVertical: 3 },
+    forYouTxt: { ...Typography.labelSmall, color: c.text },
+    // 44pt target; the negative margins keep the row as compact as the old 26pt button
+    voiceBtn: { alignItems: 'center', marginVertical: -11, marginRight: -8 },
+    voiceIcon: { fontSize: 18 },
+    tipDesc: { ...Typography.bodyMedium, color: c.textSecondary, lineHeight: 20, marginBottom: 10 },
+    tipFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+    catTag: { backgroundColor: c.background, borderRadius: Radius.sm, paddingHorizontal: 10, paddingVertical: 4 },
+    catTxt: { ...Typography.labelSmall, color: c.textSecondary },
+    saveTxt: { ...Typography.labelSmall, color: c.primaryText },
+  });
+};
 
 export default TipsScreen;

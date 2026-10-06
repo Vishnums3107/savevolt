@@ -1,32 +1,40 @@
 import Tts from 'react-native-tts';
 
+// Updated by the TTS event listeners registered in initializeTts
+let isSpeaking = false;
+let ttsListenersRegistered = false;
+
+const registerTtsListeners = () => {
+  if (ttsListenersRegistered) return;
+  Tts.addEventListener('tts-start', () => { isSpeaking = true; });
+  Tts.addEventListener('tts-finish', () => { isSpeaking = false; });
+  Tts.addEventListener('tts-cancel', () => { isSpeaking = false; });
+  ttsListenersRegistered = true;
+};
+
 /**
- * Initialize Text-to-Speech engine
+ * Initialize Text-to-Speech engine. Safe to call more than once.
  */
 export const initializeTts = async () => {
   try {
+    registerTtsListeners();
+
     // Set default language
     await Tts.setDefaultLanguage('en-US');
 
     // Set default rate (speed of speech)
     await Tts.setDefaultRate(0.5);
-    
+
     // Set default pitch
     await Tts.setDefaultPitch(1.0);
-    
+
     // Get available voices
     const voices = await Tts.voices();
     const englishVoice = voices.find(v => v.language === 'en-US');
-    
+
     if (englishVoice) {
       await Tts.setDefaultVoice(englishVoice.id);
     }
-    
-    Tts.addEventListener('tts-start', () => { isSpeaking = true; });
-    Tts.addEventListener('tts-finish', () => { isSpeaking = false; });
-    Tts.addEventListener('tts-cancel', () => { isSpeaking = false; });
-
-    console.log('TTS initialized successfully');
   } catch (error) {
     console.error('Error initializing TTS:', error);
   }
@@ -78,14 +86,16 @@ export const speakReminder = async (message: string) => {
 
 /**
  * Speak dashboard summary
+ * @param currencyLabel spoken name of the currency, e.g. "rupees" (defaults to "dollars")
  */
 export const speakDashboardSummary = async (
   energy: number,
   cost: number,
   co2: number,
-  trees: number
+  trees: number,
+  currencyLabel = 'dollars',
 ) => {
-  const text = `Your monthly energy usage is ${energy.toFixed(1)} kilowatt hours, costing ${cost.toFixed(2)} dollars. You've generated ${co2.toFixed(1)} kilograms of C O 2, equivalent to ${trees.toFixed(1)} trees needed for offset.`;
+  const text = `Your monthly energy usage is ${energy.toFixed(1)} kilowatt hours, costing ${cost.toFixed(2)} ${currencyLabel}. You've generated ${co2.toFixed(1)} kilograms of C O 2, equivalent to ${trees.toFixed(1)} trees needed for offset.`;
   await speak(text);
 };
 
@@ -129,8 +139,6 @@ export const isTtsAvailable = async (): Promise<boolean> => {
 /**
  * Get TTS status (whether speech is currently active)
  */
-let isSpeaking = false;
-
 export const getTtsStatus = (): boolean => {
   return isSpeaking;
 };

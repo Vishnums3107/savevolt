@@ -1,0 +1,24 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owns(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+    function validBackup() {
+      let data = request.resource.data;
+      return data.keys().hasOnly(['version', 'name', 'revision', 'payload', 'updatedAt'])
+        && data.version == 1
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 60
+        && data.revision is int && data.revision > 0
+        && data.payload is string && data.payload.size() <= 800000
+        && data.updatedAt == request.time;
+    }
+    match /users/{userId}/households/{homeId} {
+      allow read, delete: if owns(userId);
+      allow create: if owns(userId) && validBackup() && request.resource.data.revision == 1;
+      allow update: if owns(userId) && validBackup()
+        && request.resource.data.revision == resource.data.revision + 1;
+    }
+    // All other paths are denied by default.
+  }
+}

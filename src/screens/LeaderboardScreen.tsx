@@ -3,19 +3,22 @@
  * Shows global and friends rankings with achievements
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  TouchableOpacity,
   Image,
   RefreshControl,
-  StatusBar,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { Colors, Typography, Spacing, Radius, Shadows } from '../theme';
+import { Typography, Spacing, Radius, Shadows } from '../theme';
+import { useTheme, useThemedStyles, ThemeColors } from '../context/ThemeContext';
+import AccessibleTouchable from '../components/AccessibleTouchable';
+import EmptyState from '../components/EmptyState';
+import FocusAwareStatusBar from '../components/FocusAwareStatusBar';
+import { SkeletonCard } from '../components/Skeleton';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export interface LeaderboardEntry {
@@ -34,102 +37,155 @@ export interface LeaderboardEntry {
   isFriend: boolean;
 }
 
+type LeaderboardTab = 'all' | 'friends' | 'weekly' | 'monthly';
+
+const TABS: { key: LeaderboardTab; icon: string; label: string; hint: string }[] = [
+  { key: 'all', icon: '🌍', label: 'Global', hint: 'Shows all-time rankings for everyone' },
+  { key: 'friends', icon: '👥', label: 'Friends', hint: 'Shows rankings for your friends only' },
+  { key: 'weekly', icon: '📅', label: 'Weekly', hint: 'Shows this week\'s rankings' },
+  { key: 'monthly', icon: '📆', label: 'Monthly', hint: 'Shows this month\'s rankings' },
+];
+
+const STORAGE_KEY = 'leaderboard_data';
+const CURRENT_USER_ID = 'current_user';
+
+const generateSampleLeaderboard = (): LeaderboardEntry[] => {
+  const names = [
+    'You', 'Sarah Chen', 'Mike Johnson', 'Emma Davis', 'Alex Brown',
+    'Lisa Wang', 'Tom Wilson', 'Anna Lee', 'Chris Martin', 'Maya Patel',
+    'John Smith', 'Kate Taylor', 'Ryan Clark', 'Sophie Moore', 'Dan White',
+  ];
+
+  return names.map((name, index) => ({
+    id: `user-${index}`,
+    userId: index === 0 ? CURRENT_USER_ID : `user-${index}`,
+    username: name,
+    avatar: `https://api.dicebear.com/7.x/avataaars/png?seed=${name}`,
+    totalSavings: Math.max(100, 2000 - index * 100 - Math.random() * 50),
+    co2Offset: Math.max(50, 1000 - index * 50 - Math.random() * 25),
+    rank: index + 1,
+    weeklyRank: Math.floor(Math.random() * 50) + 1,
+    monthlyRank: Math.floor(Math.random() * 100) + 1,
+    streak: Math.floor(Math.random() * 90) + 1,
+    achievements: Math.floor(Math.random() * 20) + 1,
+    joinedDate: new Date(new Date().getFullYear(), Math.floor(Math.random() * 12), Math.floor(Math.random() * 28) + 1).toISOString(),
+    isFriend: index > 0 && Math.random() > 0.6,
+  }));
+};
+
+const rankFor = (entry: LeaderboardEntry, tab: LeaderboardTab): number => {
+  if (tab === 'weekly') return entry.weeklyRank;
+  if (tab === 'monthly') return entry.monthlyRank;
+  return entry.rank;
+};
+
+const getRankEmoji = (rank: number): string => {
+  if (rank === 1) return '🥇';
+  if (rank === 2) return '🥈';
+  if (rank === 3) return '🥉';
+  return `#${rank}`;
+};
+
 const LeaderboardScreen: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'all' | 'friends' | 'weekly' | 'monthly'>('all');
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
-  const [userEntry, setUserEntry] = useState<LeaderboardEntry | null>(null);
+  const { colors } = useTheme();
+  const s = useThemedStyles(createStyles);
+  const [activeTab, setActiveTab] = useState<LeaderboardTab>('all');
+  const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
+  const [isLoaded, setIsLoaded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const loadLeaderboard = useCallback(async () => {
     try {
       // Load or generate leaderboard data
-      const stored = await AsyncStorage.getItem('leaderboard_data');
+      const stored = await AsyncStorage.getItem(STORAGE_KEY);
       let data: LeaderboardEntry[] = stored ? JSON.parse(stored) : [];
 
       if (data.length === 0) {
         data = generateSampleLeaderboard();
-        await AsyncStorage.setItem('leaderboard_data', JSON.stringify(data));
+        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
       }
 
-      // Filter based on active tab
-      let filtered = data;
-      if (activeTab === 'friends') {
-        filtered = data.filter((entry) => entry.isFriend);
-      }
-
-      // Sort based on tab
-      if (activeTab === 'weekly') {
-        filtered.sort((a, b) => a.weeklyRank - b.weeklyRank);
-      } else if (activeTab === 'monthly') {
-        filtered.sort((a, b) => a.monthlyRank - b.monthlyRank);
-      } else {
-        filtered.sort((a, b) => a.rank - b.rank);
-      }
-
-      setLeaderboard(filtered);
-
-      // Find current user (first entry for demo)
-      const currentUser = data.find((entry) => entry.userId === 'current_user') || data[0];
-      setUserEntry(currentUser);
+      setEntries(data);
     } catch (error) {
       console.error('Failed to load leaderboard:', error);
+    } finally {
+      setIsLoaded(true);
     }
-  }, [activeTab]);
+  }, []);
 
   useEffect(() => {
     loadLeaderboard();
   }, [loadLeaderboard]);
 
-  const generateSampleLeaderboard = (): LeaderboardEntry[] => {
-    const names = [
-      'You', 'Sarah Chen', 'Mike Johnson', 'Emma Davis', 'Alex Brown',
-      'Lisa Wang', 'Tom Wilson', 'Anna Lee', 'Chris Martin', 'Maya Patel',
-      'John Smith', 'Kate Taylor', 'Ryan Clark', 'Sophie Moore', 'Dan White',
-    ];
-
-    return names.map((name, index) => ({
-      id: `user-${index}`,
-      userId: index === 0 ? 'current_user' : `user-${index}`,
-      username: name,
-      avatar: `https://api.dicebear.com/7.x/avataaars/png?seed=${name}`,
-      totalSavings: Math.max(100, 2000 - index * 100 - Math.random() * 50),
-      co2Offset: Math.max(50, 1000 - index * 50 - Math.random() * 25),
-      rank: index + 1,
-      weeklyRank: Math.floor(Math.random() * 50) + 1,
-      monthlyRank: Math.floor(Math.random() * 100) + 1,
-      streak: Math.floor(Math.random() * 90) + 1,
-      achievements: Math.floor(Math.random() * 20) + 1,
-      joinedDate: new Date(new Date().getFullYear(), Math.floor(Math.random() * 12), Math.floor(Math.random() * 28) + 1).toISOString(),
-      isFriend: index > 0 && Math.random() > 0.6,
-    }));
-  };
-
-  const onRefresh = async () => {
+  const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await loadLeaderboard();
     setRefreshing(false);
-  };
+  }, [loadLeaderboard]);
 
-  const getRankEmoji = (rank: number): string => {
-    if (rank === 1) return '🥇';
-    if (rank === 2) return '🥈';
-    if (rank === 3) return '🥉';
-    return `#${rank}`;
-  };
+  // Filter and rank for the active tab; sorts a copy so stored entries keep their order.
+  const rows = useMemo(() => {
+    const visible = activeTab === 'friends' ? entries.filter((entry) => entry.isFriend) : entries;
+    return visible
+      .map((entry) => ({ entry, rank: rankFor(entry, activeTab) }))
+      .sort((a, b) => a.rank - b.rank)
+      .map(({ entry, rank }) => {
+        const isCurrentUser = entry.userId === CURRENT_USER_ID;
+        // The sample data already names the current user "You"; don't render "You (You)".
+        const isNamedYou = entry.username === 'You';
+        const savings = entry.totalSavings.toFixed(0);
+        const co2 = entry.co2Offset.toFixed(0);
+        const spokenName = isCurrentUser && !isNamedYou ? `${entry.username}, you` : entry.username;
+        return {
+          entry,
+          rank,
+          isCurrentUser,
+          savings,
+          co2,
+          displayName: isCurrentUser && !isNamedYou ? `${entry.username} (You)` : entry.username,
+          label:
+            `Rank ${rank}, ${spokenName}, ${savings} kWh saved, ${co2} kg CO2 offset, ` +
+            `${entry.streak} day streak, ${entry.achievements} achievement${entry.achievements === 1 ? '' : 's'}` +
+            (entry.isFriend ? ', friend' : ''),
+        };
+      });
+  }, [entries, activeTab]);
 
-  const getRankColor = (rank: number): string => {
-    if (rank === 1) return '#FFD700';
-    if (rank === 2) return '#C0C0C0';
-    if (rank === 3) return '#CD7F32';
-    return Colors.textSecondary;
-  };
+  const userEntry = useMemo(
+    // Find current user (first entry for demo)
+    () => entries.find((entry) => entry.userId === CURRENT_USER_ID) ?? entries[0] ?? null,
+    [entries],
+  );
+  const userRank = userEntry ? rankFor(userEntry, activeTab) : null;
 
-  const renderLeaderboardEntry = (entry: LeaderboardEntry, index: number) => {
-    const isCurrentUser = entry.userId === 'current_user';
-    const currentRank = activeTab === 'weekly' ? entry.weeklyRank :
-                       activeTab === 'monthly' ? entry.monthlyRank : entry.rank;
+  const renderList = () => {
+    if (!isLoaded) {
+      return [0, 1, 2].map((key) => (
+        <SkeletonCard key={key} lines={1} label="Loading leaderboard" style={s.skeletonCard} />
+      ));
+    }
 
-    return (
+    if (rows.length === 0) {
+      return activeTab === 'friends' && entries.length > 0 ? (
+        <EmptyState
+          variant="inline"
+          icon="👥"
+          title="No friends in this preview"
+          body="None of the sample players are marked as friends. Switch to Global to see the full standings."
+          primaryAction={{ label: 'Show global rankings', onPress: () => setActiveTab('all') }}
+        />
+      ) : (
+        <EmptyState
+          variant="inline"
+          icon="🏆"
+          title="No rankings available yet"
+          body="Start saving energy to climb the leaderboard!"
+          primaryAction={{ label: 'Reload rankings', hint: 'Loads the sample standings again', onPress: onRefresh }}
+        />
+      );
+    }
+
+    return rows.map(({ entry, rank, isCurrentUser, savings, co2, displayName, label }, index) => (
       <View
         key={entry.id}
         style={[
@@ -137,31 +193,28 @@ const LeaderboardScreen: React.FC = () => {
           isCurrentUser && s.currentUserCard,
           index < 3 && s.topThreeCard,
         ]}
+        accessible
+        accessibilityLabel={label}
       >
         <View style={s.rankContainer}>
-          <Text style={[s.rankText, { color: getRankColor(currentRank) }]}>
-            {getRankEmoji(currentRank)}
-          </Text>
+          <Text style={s.rankText}>{getRankEmoji(rank)}</Text>
         </View>
 
-        <Image source={{ uri: entry.avatar }} style={s.avatar} />
+        <Image source={{ uri: entry.avatar }} style={s.avatar} accessible={false} />
 
         <View style={s.infoContainer}>
           <View style={s.nameRow}>
-            <Text style={[s.username, isCurrentUser && s.currentUserText]}>
-              {entry.username}
-              {isCurrentUser && ' (You)'}
-            </Text>
+            <Text style={[s.username, isCurrentUser && s.currentUserText]}>{displayName}</Text>
             {entry.isFriend && <Text style={s.friendBadge}>👥 Friend</Text>}
           </View>
 
           <View style={s.statsRow}>
             <View style={s.stat}>
-              <Text style={s.statValue}>{entry.totalSavings.toFixed(0)}</Text>
+              <Text style={s.statValue}>{savings}</Text>
               <Text style={s.statLabel}>kWh Saved</Text>
             </View>
             <View style={s.stat}>
-              <Text style={s.statValue}>{entry.co2Offset.toFixed(0)}</Text>
+              <Text style={s.statValue}>{co2}</Text>
               <Text style={s.statLabel}>kg CO₂</Text>
             </View>
             <View style={s.stat}>
@@ -175,16 +228,16 @@ const LeaderboardScreen: React.FC = () => {
           <Text style={s.achievementCount}>🏆 {entry.achievements}</Text>
         </View>
       </View>
-    );
+    ));
   };
 
   return (
     <View style={s.container}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.dark} />
+      <FocusAwareStatusBar variant="hero" />
       {/* Header */}
-      <LinearGradient colors={['#0B1120', '#162032']} style={s.header}>
+      <LinearGradient colors={colors.heroGradient} style={s.header}>
         <Text style={s.headerLabel}>LOCAL PREVIEW</Text>
-        <Text style={s.headerTitle}>Leaderboard Preview</Text>
+        <Text style={s.headerTitle} accessibilityRole="header">Leaderboard Preview</Text>
       </LinearGradient>
 
       <View style={s.previewNotice}>
@@ -192,15 +245,18 @@ const LeaderboardScreen: React.FC = () => {
       </View>
 
       {/* Current User Card */}
-      {userEntry && (
-        <View style={s.currentUserBanner}>
+      {userEntry && userRank !== null && (
+        <View
+          style={s.currentUserBanner}
+          accessible
+          accessibilityLabel={`Your sample position: rank ${userRank} in this preview. Total savings: ${userEntry.totalSavings.toFixed(0)} kWh`}
+        >
           <View style={s.currentUserInfo}>
-            <Image source={{ uri: userEntry.avatar }} style={s.bannerAvatar} />
+            <Image source={{ uri: userEntry.avatar }} style={s.bannerAvatar} accessible={false} />
             <View>
               <Text style={s.bannerName}>Your sample position</Text>
               <Text style={s.bannerRank}>
-                {getRankEmoji(activeTab === 'weekly' ? userEntry.weeklyRank :
-                              activeTab === 'monthly' ? userEntry.monthlyRank : userEntry.rank)}
+                {getRankEmoji(userRank)}
                 {' '}in this preview
               </Text>
             </View>
@@ -213,65 +269,46 @@ const LeaderboardScreen: React.FC = () => {
       )}
 
       {/* Tab Selector */}
-      <View style={s.tabContainer}>
-        <TouchableOpacity
-          style={[s.tab, activeTab === 'all' && s.activeTab]}
-          onPress={() => setActiveTab('all')}
-        >
-          <Text style={[s.tabText, activeTab === 'all' && s.activeTabText]}>
-            🌍 Global
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[s.tab, activeTab === 'friends' && s.activeTab]}
-          onPress={() => setActiveTab('friends')}
-        >
-          <Text style={[s.tabText, activeTab === 'friends' && s.activeTabText]}>
-            👥 Friends
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[s.tab, activeTab === 'weekly' && s.activeTab]}
-          onPress={() => setActiveTab('weekly')}
-        >
-          <Text style={[s.tabText, activeTab === 'weekly' && s.activeTabText]}>
-            📅 Weekly
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[s.tab, activeTab === 'monthly' && s.activeTab]}
-          onPress={() => setActiveTab('monthly')}
-        >
-          <Text style={[s.tabText, activeTab === 'monthly' && s.activeTabText]}>
-            📆 Monthly
-          </Text>
-        </TouchableOpacity>
+      <View style={s.tabContainer} accessibilityRole="tablist">
+        {TABS.map((tab) => {
+          const selected = activeTab === tab.key;
+          return (
+            <AccessibleTouchable
+              key={tab.key}
+              role="tab"
+              label={tab.label}
+              hint={tab.hint}
+              accessibilityState={{ selected }}
+              style={[s.tab, selected && s.activeTab]}
+              onPress={() => setActiveTab(tab.key)}
+            >
+              <Text style={[s.tabText, selected && s.activeTabText]}>
+                {tab.icon} {tab.label}
+              </Text>
+            </AccessibleTouchable>
+          );
+        })}
       </View>
 
       {/* Leaderboard List */}
       <ScrollView
         style={s.scrollView}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.primary}
+            colors={[colors.primary]}
+            progressBackgroundColor={colors.card}
+          />
+        }
       >
-        {leaderboard.length === 0 ? (
-          <View style={s.emptyState}>
-            <Text style={s.emptyIcon}>🏆</Text>
-            <Text style={s.emptyText}>No rankings available yet</Text>
-            <Text style={s.emptySubtext}>
-              Start saving energy to climb the leaderboard!
-            </Text>
-          </View>
-        ) : (
-          leaderboard.map((entry, index) => renderLeaderboardEntry(entry, index))
-        )}
+        {renderList()}
       </ScrollView>
 
       {/* Bottom Info */}
       <View style={s.bottomInfo}>
-        <Text style={s.bottomText}>
+        <Text style={s.bottomText} accessibilityLabel="Rankings update daily based on energy savings">
           💡 Rankings update daily based on energy savings
         </Text>
       </View>
@@ -279,10 +316,10 @@ const LeaderboardScreen: React.FC = () => {
   );
 };
 
-const s = StyleSheet.create({
+const createStyles = (c: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: c.background,
   },
   header: {
     paddingTop: 54,
@@ -292,23 +329,23 @@ const s = StyleSheet.create({
   },
   headerLabel: {
     ...Typography.overline,
-    color: Colors.primary,
+    color: c.primary,
     marginBottom: 4,
   },
   headerTitle: {
     ...Typography.displaySmall,
-    color: '#fff',
+    color: c.textOnDark,
   },
   previewNotice: {
     marginHorizontal: Spacing.page,
     marginTop: Spacing.page,
-    backgroundColor: Colors.primarySoft,
+    backgroundColor: c.primarySoft,
     borderRadius: Radius.md,
     padding: Spacing.md,
   },
-  previewNoticeText: { ...Typography.bodySmall, color: Colors.primaryDark, lineHeight: 18 },
+  previewNoticeText: { ...Typography.bodySmall, color: c.text, lineHeight: 18 },
   currentUserBanner: {
-    backgroundColor: Colors.card,
+    backgroundColor: c.card,
     marginHorizontal: Spacing.lg,
     marginTop: Spacing.lg,
     marginBottom: Spacing.sm,
@@ -318,7 +355,7 @@ const s = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     borderLeftWidth: 4,
-    borderLeftColor: Colors.primary,
+    borderLeftColor: c.primary,
     ...Shadows.md,
   },
   currentUserInfo: {
@@ -330,31 +367,31 @@ const s = StyleSheet.create({
     height: 50,
     borderRadius: 25,
     marginRight: Spacing.md,
-    backgroundColor: Colors.border,
+    backgroundColor: c.border,
   },
   bannerName: {
     ...Typography.bodyMedium,
-    color: Colors.textSecondary,
+    color: c.textSecondary,
     marginBottom: 3,
   },
   bannerRank: {
     ...Typography.h3,
-    color: Colors.text,
+    color: c.text,
   },
   bannerStats: {
     alignItems: 'flex-end',
   },
   bannerStatText: {
     ...Typography.stat,
-    color: Colors.primary,
+    color: c.primaryText,
   },
   bannerStatLabel: {
     ...Typography.bodySmall,
-    color: Colors.textSecondary,
+    color: c.textSecondary,
   },
   tabContainer: {
     flexDirection: 'row',
-    backgroundColor: Colors.card,
+    backgroundColor: c.card,
     marginHorizontal: Spacing.lg,
     marginBottom: Spacing.sm,
     borderRadius: Radius.md,
@@ -369,20 +406,24 @@ const s = StyleSheet.create({
     alignItems: 'center',
   },
   activeTab: {
-    backgroundColor: Colors.primary,
+    backgroundColor: c.primary,
   },
   tabText: {
     ...Typography.label,
-    color: Colors.textSecondary,
+    color: c.textSecondary,
   },
   activeTabText: {
-    color: '#fff',
+    color: c.onPrimary,
   },
   scrollView: {
     flex: 1,
   },
+  skeletonCard: {
+    marginHorizontal: Spacing.lg,
+    marginVertical: 6,
+  },
   entryCard: {
-    backgroundColor: Colors.card,
+    backgroundColor: c.card,
     marginHorizontal: Spacing.lg,
     marginVertical: 6,
     padding: Spacing.md,
@@ -393,8 +434,8 @@ const s = StyleSheet.create({
   },
   currentUserCard: {
     borderWidth: 2,
-    borderColor: Colors.primary,
-    backgroundColor: Colors.primarySoft,
+    borderColor: c.primary,
+    backgroundColor: c.primarySoft,
   },
   topThreeCard: {
     ...Shadows.md,
@@ -406,13 +447,14 @@ const s = StyleSheet.create({
   },
   rankText: {
     ...Typography.h2,
+    color: c.textSecondary,
   },
   avatar: {
     width: 45,
     height: 45,
     borderRadius: 22.5,
     marginRight: Spacing.md,
-    backgroundColor: Colors.border,
+    backgroundColor: c.border,
   },
   infoContainer: {
     flex: 1,
@@ -424,16 +466,16 @@ const s = StyleSheet.create({
   },
   username: {
     ...Typography.h3,
-    color: Colors.text,
+    color: c.text,
     marginRight: Spacing.sm,
   },
   currentUserText: {
-    color: Colors.primary,
+    color: c.primaryText,
   },
   friendBadge: {
     ...Typography.overline,
-    color: Colors.success,
-    backgroundColor: Colors.primarySoft,
+    color: c.text,
+    backgroundColor: c.successSoft,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: Radius.sm,
@@ -446,11 +488,11 @@ const s = StyleSheet.create({
   },
   statValue: {
     ...Typography.label,
-    color: Colors.text,
+    color: c.text,
   },
   statLabel: {
     ...Typography.overline,
-    color: Colors.textSecondary,
+    color: c.textSecondary,
     letterSpacing: 0.3,
   },
   achievementsContainer: {
@@ -458,40 +500,19 @@ const s = StyleSheet.create({
   },
   achievementCount: {
     ...Typography.label,
-    color: Colors.primary,
+    color: c.primaryText,
   },
   bottomInfo: {
-    backgroundColor: Colors.card,
+    backgroundColor: c.card,
     padding: Spacing.md,
     alignItems: 'center',
     borderTopWidth: 1,
-    borderTopColor: Colors.border,
+    borderTopColor: c.border,
   },
   bottomText: {
     ...Typography.bodySmall,
-    color: Colors.textSecondary,
+    color: c.textSecondary,
     textAlign: 'center',
-  },
-  emptyState: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
-  },
-  emptyIcon: {
-    fontSize: 64,
-    marginBottom: Spacing.lg,
-  },
-  emptyText: {
-    ...Typography.h2,
-    color: Colors.text,
-    marginBottom: Spacing.sm,
-  },
-  emptySubtext: {
-    ...Typography.bodyMedium,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-    paddingHorizontal: 40,
   },
 });
 

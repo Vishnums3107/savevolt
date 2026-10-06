@@ -1,24 +1,35 @@
 /**
  * SaveVolt — Smart Energy Management
  * Track, analyze, and reduce your energy consumption
- * 
+ *
  * @format
  */
 
 import React, { useEffect, useState } from 'react';
-import { StatusBar, StyleSheet, useColorScheme, View, ActivityIndicator } from 'react-native';
+import { StatusBar, StyleSheet, View, ActivityIndicator } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { EnergyProvider, useEnergy } from './src/context/EnergyContext';
+import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import AppNavigator from './src/navigation/AppNavigator';
+import OnboardingScreen from './src/screens/OnboardingScreen';
 import { initializeTts } from './src/utils/voice';
+import { ErrorBoundary } from './src/components/ErrorBoundary';
+import { useNotificationSync } from './src/services/notifications/useNotificationSync';
 
 function AppContent() {
-  const { isLoading } = useEnergy();
+  const { isLoading, hasSeenOnboarding, completeOnboarding } = useEnergy(
+    'isLoading',
+    'hasSeenOnboarding',
+    'completeOnboarding',
+  );
+  const { colors } = useTheme();
   const [startupTimedOut, setStartupTimedOut] = useState(false);
 
+  // Keeps reminders, alerts, and badge notifications in step with app data
+  useNotificationSync();
+
   useEffect(() => {
-    // Initialize text-to-speech on app start
     initializeTts();
   }, []);
 
@@ -31,27 +42,47 @@ function AppContent() {
 
   if (isLoading && !startupTimedOut) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#4CAF50" />
+      <View
+        style={[styles.loadingContainer, { backgroundColor: colors.background }]}
+        accessibilityLabel="Loading SaveVolt"
+      >
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
+  }
+
+  if (!hasSeenOnboarding) {
+    return <OnboardingScreen onComplete={completeOnboarding} />;
   }
 
   return <AppNavigator />;
 }
 
 function App() {
-  const isDarkMode = useColorScheme() === 'dark';
-
   return (
     <GestureHandlerRootView style={styles.appRoot}>
       <SafeAreaProvider>
-        <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-        <EnergyProvider>
-          <AppContent />
-        </EnergyProvider>
+        <ErrorBoundary>
+          <EnergyProvider>
+            <ThemeProvider>
+              <ThemedStatusBar />
+              <AppContent />
+            </ThemeProvider>
+          </EnergyProvider>
+        </ErrorBoundary>
       </SafeAreaProvider>
     </GestureHandlerRootView>
+  );
+}
+
+/** Default status bar for the active theme; screens with dark hero headers override it. */
+function ThemedStatusBar() {
+  const { isDark, colors } = useTheme();
+  return (
+    <StatusBar
+      barStyle={isDark ? 'light-content' : 'dark-content'}
+      backgroundColor={colors.background}
+    />
   );
 }
 
@@ -63,7 +94,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#f5f5f5',
   },
 });
 

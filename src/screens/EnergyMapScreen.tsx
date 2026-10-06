@@ -1,90 +1,163 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  TouchableOpacity,
   Dimensions,
   Modal,
   TextInput,
-  StatusBar,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { Colors, Typography, Spacing, Radius, Shadows } from '../theme';
+import { Typography, Spacing, Radius, Shadows } from '../theme';
 import { useEnergy } from '../context/EnergyContext';
-import { Room, EnergyHotspot } from '../types';
+import { useTheme, useThemedStyles, ThemeColors } from '../context/ThemeContext';
+import AccessibleTouchable from '../components/AccessibleTouchable';
+import EmptyState from '../components/EmptyState';
+import FocusAwareStatusBar from '../components/FocusAwareStatusBar';
+import { Appliance, Room, EnergyHotspot } from '../types';
 import { calculateApplianceConsumption, formatEnergy, formatCost } from '../utils/energy';
 
 const screenWidth = Dimensions.get('window').width;
 const mapWidth = screenWidth - 40;
 const mapHeight = 400;
 
+const ROOM_POSITIONS = [
+  { x: 50, y: 50 }, { x: 200, y: 50 }, { x: 50, y: 200 },
+  { x: 200, y: 200 }, { x: 125, y: 125 }, { x: 50, y: 300 },
+];
+
+const RANK_BADGES = ['🥇', '🥈', '🥉'];
+
+interface HeatLevel {
+  name: string;
+  /** Visible legend range */
+  range: string;
+  /** Range phrased for screen readers */
+  spokenRange: string;
+  /** Share of total consumption (%) the room must exceed to reach this level */
+  above: number;
+  color: string;
+}
+
+// Fixed intensity scale, identical in both themes so a level always looks the same. Every fill
+// takes dark ink (onPrimary) at 5:1 or better, and each level is also spelled out in text.
+const HEAT_LEVELS: HeatLevel[] = [
+  { name: 'Low', range: '<5%', spokenRange: 'under 5%', above: -Infinity, color: '#10B981' },
+  { name: 'Moderate', range: '5-15%', spokenRange: '5 to 15%', above: 5, color: '#FFC107' },
+  { name: 'Medium', range: '15-30%', spokenRange: '15 to 30%', above: 15, color: '#F59E0B' },
+  { name: 'High', range: '>30%', spokenRange: 'over 30%', above: 30, color: '#EF4444' },
+];
+
+const LEGEND_LABEL = `Heat map legend, share of total energy: ${HEAT_LEVELS.map(
+  (level) => `${level.name}, ${level.spokenRange}`,
+).join('; ')}`;
+
+const getHeatLevel = (percentage: number): HeatLevel => {
+  for (let i = HEAT_LEVELS.length - 1; i > 0; i--) {
+    if (percentage > HEAT_LEVELS[i].above) return HEAT_LEVELS[i];
+  }
+  return HEAT_LEVELS[0];
+};
+
+interface RoomHotspot extends EnergyHotspot {
+  room: Room;
+  appliances: Appliance[];
+  level: HeatLevel;
+}
+
+const describeHotspot = (hotspot: RoomHotspot, currency: string, digits = 0) =>
+  `${hotspot.roomName}: ${formatEnergy(hotspot.totalConsumption)} and ` +
+  `${formatCost(hotspot.totalCost, currency)} per month, ` +
+  `${hotspot.percentage.toFixed(digits)}% of total energy, ${hotspot.level.name.toLowerCase()} usage`;
+
 const EnergyMapScreen = () => {
-  const { appliances, settings, rooms, addRoom, assignApplianceToRoom } = useEnergy();
+  const { appliances, settings, rooms, addRoom, assignApplianceToRoom } = useEnergy(
+    'appliances',
+    'settings',
+    'rooms',
+    'addRoom',
+    'assignApplianceToRoom',
+  );
+  const { electricityRate, currency } = settings;
+  const { colors, isDark } = useTheme();
+  const s = useThemedStyles(createStyles);
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
   const [showAddRoomModal, setShowAddRoomModal] = useState(false);
   const [newRoomName, setNewRoomName] = useState('');
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [assignRoomId, setAssignRoomId] = useState<string | null>(null);
 
-  // Calculate energy hotspots
-  const calculateHotspots = (): EnergyHotspot[] => {
-    if (!rooms || rooms.length === 0) {
-      return [];
-    }
+  // Daily kWh per appliance, shared by the hotspot totals and the room details list
+  const dailyKwhById = useMemo(() => {
+    const byId = new Map<string, number>();
+    appliances.forEach((app) => byId.set(app.id, calculateApplianceConsumption(app, 1)));
+    return byId;
+  }, [appliances]);
 
+  // Calculate energy hotspots
+  const hotspots = useMemo<RoomHotspot[]>(() => {
     const totalConsumption = appliances.reduce(
-      (sum, app) => sum + calculateApplianceConsumption(app, 1),
-      0
+      (sum, app) => sum + (dailyKwhById.get(app.id) ?? 0),
+      0,
     );
 
     return rooms.map((room) => {
       const roomAppliances = appliances.filter(a => room.appliances.includes(a.id));
       const consumption = roomAppliances.reduce(
-        (sum, app) => sum + calculateApplianceConsumption(app, 1),
-        0
+        (sum, app) => sum + (dailyKwhById.get(app.id) ?? 0),
+        0,
       );
       const monthlyConsumption = consumption * 30;
-      const cost = monthlyConsumption * settings.electricityRate;
       const percentage = totalConsumption > 0 ? (consumption / totalConsumption) * 100 : 0;
-
-      // Color based on consumption level
-      let color = Colors.success; // Green - low
-      if (percentage > 30) color = Colors.danger; // Red - high
-      else if (percentage > 15) color = Colors.warning; // Orange - medium
-      else if (percentage > 5) color = '#FFC107'; // Yellow - moderate
+      const level = getHeatLevel(percentage);
 
       return {
         roomId: room.id,
         roomName: room.name,
         totalConsumption: monthlyConsumption,
-        totalCost: cost,
+        totalCost: monthlyConsumption * electricityRate,
         percentage,
-        color,
+        color: level.color,
+        room,
+        appliances: roomAppliances,
+        level,
       };
     });
-  };
+  }, [rooms, appliances, dailyKwhById, electricityRate]);
 
-  const hotspots = calculateHotspots();
+  const rankedHotspots = useMemo(
+    () => [...hotspots].sort((a, b) => b.percentage - a.percentage),
+    [hotspots],
+  );
+
+  const selectedHotspot = useMemo(
+    () => hotspots.find(h => h.roomId === selectedRoom) ?? null,
+    [hotspots, selectedRoom],
+  );
+
+  const unassignedAppliances = useMemo(() => {
+    const assignedIds = new Set(rooms.flatMap(r => r.appliances));
+    return appliances.filter(a => !assignedIds.has(a.id));
+  }, [rooms, appliances]);
+
+  const assignRoomName = rooms.find(r => r.id === assignRoomId)?.name;
+  const trimmedRoomName = newRoomName.trim();
 
   const handleAddRoom = () => {
     setNewRoomName('');
     setShowAddRoomModal(true);
   };
 
+  const closeAddRoom = () => setShowAddRoomModal(false);
+
   const confirmAddRoom = () => {
-    if (newRoomName.trim()) {
-      const roomCount = rooms?.length || 0;
-      const positions = [
-        { x: 50, y: 50 }, { x: 200, y: 50 }, { x: 50, y: 200 },
-        { x: 200, y: 200 }, { x: 125, y: 125 }, { x: 50, y: 300 },
-      ];
+    if (trimmedRoomName) {
       const newRoom: Room = {
         id: `room-${Date.now()}`,
-        name: newRoomName.trim(),
+        name: trimmedRoomName,
         appliances: [],
-        position: positions[roomCount % positions.length],
+        position: ROOM_POSITIONS[rooms.length % ROOM_POSITIONS.length],
       };
       addRoom(newRoom);
       setShowAddRoomModal(false);
@@ -96,74 +169,111 @@ const EnergyMapScreen = () => {
     setShowAssignModal(true);
   };
 
-  const getUnassignedAppliances = () => {
-    const assignedIds = new Set(rooms?.flatMap(r => r.appliances) || []);
-    return appliances.filter(a => !assignedIds.has(a.id));
+  const closeAssign = () => setShowAssignModal(false);
+
+  const handlePickAppliance = (applianceId: string) => {
+    if (assignRoomId) {
+      assignApplianceToRoom(applianceId, assignRoomId);
+    }
+    setShowAssignModal(false);
   };
 
   const handleRoomPress = (roomId: string) => {
-    setSelectedRoom(roomId === selectedRoom ? null : roomId);
+    setSelectedRoom(prev => (prev === roomId ? null : roomId));
   };
 
-  const getRoomAppliances = (roomId: string) => {
-    const room = rooms?.find(r => r.id === roomId);
-    if (!room) return [];
-    return appliances.filter(a => room.appliances.includes(a.id));
-  };
+  const header = (
+    <LinearGradient colors={colors.heroGradient} style={s.header}>
+      <Text style={s.headerLabel} accessible={false} importantForAccessibility="no">
+        ENERGY MAP
+      </Text>
+      <Text style={s.headerTitle} accessibilityRole="header">Energy Map</Text>
+    </LinearGradient>
+  );
 
-  if (!rooms || rooms.length === 0) {
+  // Rendered in both branches so "Add First Room" can open it from the empty state
+  const addRoomModal = (
+    <Modal
+      visible={showAddRoomModal}
+      animationType="fade"
+      transparent
+      onRequestClose={closeAddRoom}
+    >
+      <View style={s.modalOverlay}>
+        <View style={s.modalContent}>
+          <Text style={s.modalTitle} accessibilityRole="header">Add Room</Text>
+          <TextInput
+            style={s.modalInput}
+            value={newRoomName}
+            onChangeText={setNewRoomName}
+            placeholder="Enter room name"
+            placeholderTextColor={colors.textMuted}
+            keyboardAppearance={isDark ? 'dark' : 'light'}
+            accessibilityLabel="Room name"
+            autoFocus
+          />
+          <View style={s.modalButtons}>
+            <AccessibleTouchable
+              label="Cancel"
+              hint="Closes without adding a room"
+              style={[s.modalCancel, s.modalRowButton]}
+              onPress={closeAddRoom}
+            >
+              <Text style={s.modalCancelText}>Cancel</Text>
+            </AccessibleTouchable>
+            <AccessibleTouchable
+              label="Add room"
+              hint={trimmedRoomName ? 'Places the room on your energy map' : 'Enter a room name first'}
+              disabled={!trimmedRoomName}
+              accessibilityState={{ disabled: !trimmedRoomName }}
+              style={!trimmedRoomName && s.disabled}
+              onPress={confirmAddRoom}
+            >
+              <LinearGradient colors={[colors.primary, colors.primaryDark]} style={s.modalConfirm}>
+                <Text style={s.modalConfirmText}>Add</Text>
+              </LinearGradient>
+            </AccessibleTouchable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  if (rooms.length === 0) {
     return (
       <View style={s.container}>
-        <StatusBar barStyle="light-content" backgroundColor={Colors.dark} />
-        <LinearGradient colors={['#0B1120', '#162032']} style={s.header}>
-          <Text style={s.headerLabel}>ENERGY MAP</Text>
-          <Text style={s.headerTitle}>Energy Map</Text>
-        </LinearGradient>
-
-        <View style={s.emptyContainer}>
-          <Text style={s.emptyIcon}>🏠</Text>
-          <Text style={s.emptyTitle}>No Rooms Added</Text>
-          <Text style={s.emptyText}>
-            Create rooms and assign appliances to see your energy map
-          </Text>
-          <TouchableOpacity onPress={handleAddRoom}>
-            <LinearGradient colors={['#00E676', '#00C853']} style={s.addButton}>
-              <Text style={s.addButtonText}>+ Add First Room</Text>
-            </LinearGradient>
-          </TouchableOpacity>
-        </View>
+        <FocusAwareStatusBar variant="hero" />
+        {header}
+        <EmptyState
+          icon="🏠"
+          title="No Rooms Added"
+          body="Create rooms like Kitchen or Bedroom, then assign appliances to see which parts of your home use the most energy."
+          primaryAction={{
+            label: 'Add First Room',
+            hint: 'Opens a form to name your first room',
+            onPress: handleAddRoom,
+          }}
+        />
+        {addRoomModal}
       </View>
     );
   }
 
   return (
     <ScrollView style={s.container}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.dark} />
-      <LinearGradient colors={['#0B1120', '#162032']} style={s.header}>
-        <Text style={s.headerLabel}>ENERGY MAP</Text>
-        <Text style={s.headerTitle}>Energy Map</Text>
-      </LinearGradient>
+      <FocusAwareStatusBar variant="hero" />
+      {header}
 
       {/* Heat Map Legend */}
-      <View style={s.legend}>
+      <View style={s.legend} accessible accessibilityLabel={LEGEND_LABEL}>
         <Text style={s.legendTitle}>Heat Map Legend:</Text>
         <View style={s.legendItems}>
-          <View style={s.legendItem}>
-            <View style={[s.legendColor, { backgroundColor: Colors.success }]} />
-            <Text style={s.legendText}>Low (&lt;5%)</Text>
-          </View>
-          <View style={s.legendItem}>
-            <View style={[s.legendColor, s.legendColorModerate]} />
-            <Text style={s.legendText}>Moderate (5-15%)</Text>
-          </View>
-          <View style={s.legendItem}>
-            <View style={[s.legendColor, { backgroundColor: Colors.warning }]} />
-            <Text style={s.legendText}>Medium (15-30%)</Text>
-          </View>
-          <View style={s.legendItem}>
-            <View style={[s.legendColor, { backgroundColor: Colors.danger }]} />
-            <Text style={s.legendText}>High (&gt;30%)</Text>
-          </View>
+          {HEAT_LEVELS.map((level) => (
+            <View key={level.name} style={s.legendItem}>
+              <View style={[s.legendColor, { backgroundColor: level.color }]} />
+              <Text style={s.legendText}>{level.name} ({level.range})</Text>
+            </View>
+          ))}
         </View>
       </View>
 
@@ -171,185 +281,219 @@ const EnergyMapScreen = () => {
       <View style={s.mapContainer}>
         <View style={s.map}>
           {hotspots.map((hotspot) => {
-            const room = rooms.find(r => r.id === hotspot.roomId);
-            if (!room) return null;
-
             // Calculate size based on consumption percentage
             const size = Math.max(60, Math.min(120, 60 + (hotspot.percentage * 2)));
+            const isSelected = selectedRoom === hotspot.roomId;
 
             return (
-              <TouchableOpacity
+              <AccessibleTouchable
                 key={hotspot.roomId}
+                label={describeHotspot(hotspot, currency)}
+                hint={isSelected ? 'Hides the room details' : 'Shows the room details and its appliances'}
+                accessibilityState={{ selected: isSelected, expanded: isSelected }}
                 style={[
                   s.roomMarker,
                   {
                     backgroundColor: hotspot.color,
                     width: size,
                     height: size,
-                    left: room.position.x,
-                    top: room.position.y,
+                    left: hotspot.room.position.x,
+                    top: hotspot.room.position.y,
                   },
-                  selectedRoom === hotspot.roomId && s.roomMarkerSelected,
+                  isSelected && s.roomMarkerSelected,
                 ]}
                 onPress={() => handleRoomPress(hotspot.roomId)}
               >
-                <Text style={s.roomName}>{hotspot.roomName}</Text>
+                <Text style={s.roomName} numberOfLines={2}>{hotspot.roomName}</Text>
                 <Text style={s.roomPercentage}>{hotspot.percentage.toFixed(0)}%</Text>
-              </TouchableOpacity>
+              </AccessibleTouchable>
             );
           })}
         </View>
       </View>
 
       {/* Room Details */}
-      {selectedRoom && (
+      {selectedHotspot && (
         <View style={s.detailsContainer}>
-          {hotspots.filter(h => h.roomId === selectedRoom).map((hotspot) => {
-            const roomAppliances = getRoomAppliances(hotspot.roomId);
+          <View style={s.detailsCard}>
+            <Text
+              style={s.detailsTitle}
+              accessibilityRole="header"
+              accessibilityLabel={`${selectedHotspot.roomName} details`}
+            >
+              📍 {selectedHotspot.roomName}
+            </Text>
 
-            return (
-              <View key={hotspot.roomId} style={s.detailsCard}>
-                <Text style={s.detailsTitle}>📍 {hotspot.roomName}</Text>
-
-                <View style={s.statsRow}>
-                  <View style={s.statBox}>
-                    <Text style={s.statLabel}>Monthly Energy</Text>
-                    <Text style={s.statValue}>{formatEnergy(hotspot.totalConsumption)}</Text>
-                  </View>
-                  <View style={s.statBox}>
-                    <Text style={s.statLabel}>Monthly Cost</Text>
-                    <Text style={s.statValue}>{formatCost(hotspot.totalCost, settings.currency)}</Text>
-                  </View>
-                  <View style={s.statBox}>
-                    <Text style={s.statLabel}>% of Total</Text>
-                    <Text style={s.statValue}>{hotspot.percentage.toFixed(1)}%</Text>
-                  </View>
-                </View>
-
-                <View style={s.appliancesHeaderRow}>
-                  <Text style={s.appliancesTitle}>Appliances in this room:</Text>
-                  <TouchableOpacity
-                    onPress={() => handleAssignAppliance(hotspot.roomId)}
-                  >
-                    <LinearGradient
-                      colors={['#00E676', '#00C853']}
-                      style={s.assignButton}
-                    >
-                      <Text style={s.assignButtonText}>+ Assign</Text>
-                    </LinearGradient>
-                  </TouchableOpacity>
-                </View>
-                {roomAppliances.length === 0 ? (
-                  <Text style={s.noAppliances}>No appliances assigned. Tap "+ Assign" to add.</Text>
-                ) : (
-                  roomAppliances.map((appliance) => {
-                    const consumption = calculateApplianceConsumption(appliance, 1);
-                    return (
-                      <View key={appliance.id} style={s.applianceItem}>
-                        <Text style={s.applianceName}>{appliance.name}</Text>
-                        <Text style={s.applianceConsumption}>
-                          {formatEnergy(consumption * 30)}/mo
-                        </Text>
-                      </View>
-                    );
-                  })
-                )}
+            <View style={s.statsRow}>
+              <View
+                style={s.statBox}
+                accessible
+                accessibilityLabel={`Monthly energy: ${formatEnergy(selectedHotspot.totalConsumption)}`}
+              >
+                <Text style={s.statLabel}>Monthly Energy</Text>
+                <Text style={s.statValue}>{formatEnergy(selectedHotspot.totalConsumption)}</Text>
               </View>
-            );
-          })}
+              <View
+                style={s.statBox}
+                accessible
+                accessibilityLabel={`Monthly cost: ${formatCost(selectedHotspot.totalCost, currency)}`}
+              >
+                <Text style={s.statLabel}>Monthly Cost</Text>
+                <Text style={s.statValue}>{formatCost(selectedHotspot.totalCost, currency)}</Text>
+              </View>
+              <View
+                style={s.statBox}
+                accessible
+                accessibilityLabel={`Share of total: ${selectedHotspot.percentage.toFixed(1)}%`}
+              >
+                <Text style={s.statLabel}>% of Total</Text>
+                <Text style={s.statValue}>{selectedHotspot.percentage.toFixed(1)}%</Text>
+              </View>
+            </View>
+
+            <View style={s.appliancesHeaderRow}>
+              <Text style={s.appliancesTitle} accessibilityRole="header">
+                Appliances in this room:
+              </Text>
+              <AccessibleTouchable
+                label={`Assign appliance to ${selectedHotspot.roomName}`}
+                hint="Opens a list of appliances that are not in a room yet"
+                onPress={() => handleAssignAppliance(selectedHotspot.roomId)}
+              >
+                <LinearGradient
+                  colors={[colors.primary, colors.primaryDark]}
+                  style={s.assignButton}
+                >
+                  <Text style={s.assignButtonText}>+ Assign</Text>
+                </LinearGradient>
+              </AccessibleTouchable>
+            </View>
+            {selectedHotspot.appliances.length === 0 ? (
+              <EmptyState
+                variant="inline"
+                icon="🔌"
+                title="No appliances here yet"
+                body={`Assign appliances to ${selectedHotspot.roomName} to see how much energy this room uses.`}
+                primaryAction={{
+                  label: 'Assign Appliance',
+                  hint: 'Opens a list of appliances that are not in a room yet',
+                  onPress: () => handleAssignAppliance(selectedHotspot.roomId),
+                }}
+              />
+            ) : (
+              selectedHotspot.appliances.map((appliance) => {
+                const monthly = formatEnergy((dailyKwhById.get(appliance.id) ?? 0) * 30);
+                return (
+                  <View
+                    key={appliance.id}
+                    style={s.applianceItem}
+                    accessible
+                    accessibilityLabel={`${appliance.name}: ${monthly} per month`}
+                  >
+                    <Text style={s.applianceName}>{appliance.name}</Text>
+                    <Text style={s.applianceConsumption}>{monthly}/mo</Text>
+                  </View>
+                );
+              })
+            )}
+          </View>
         </View>
       )}
 
       {/* Hotspot Summary */}
       <View style={s.summaryContainer}>
-        <Text style={s.summaryTitle}>Energy Hotspots Ranking</Text>
-        {hotspots
-          .sort((a, b) => b.percentage - a.percentage)
-          .map((hotspot, index) => (
-            <View key={hotspot.roomId} style={s.hotspotItem}>
-              <View style={s.hotspotRank}>
-                <Text style={s.rankText}>
-                  {index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`}
-                </Text>
-              </View>
-              <View style={s.hotspotInfo}>
-                <Text style={s.hotspotName}>{hotspot.roomName}</Text>
-                <View style={s.hotspotBar}>
-                  <View
-                    style={[
-                      s.hotspotBarFill,
-                      { width: `${hotspot.percentage}%`, backgroundColor: hotspot.color },
-                    ]}
-                  />
-                </View>
-              </View>
-              <Text style={s.hotspotValue}>{hotspot.percentage.toFixed(1)}%</Text>
+        <Text style={s.summaryTitle} accessibilityRole="header">Energy Hotspots Ranking</Text>
+        {rankedHotspots.map((hotspot, index) => (
+          <View
+            key={hotspot.roomId}
+            style={s.hotspotItem}
+            accessible
+            accessibilityLabel={`Rank ${index + 1}, ${describeHotspot(hotspot, currency, 1)}`}
+          >
+            <View style={s.hotspotRank}>
+              <Text style={s.rankText}>{RANK_BADGES[index] ?? `${index + 1}.`}</Text>
             </View>
-          ))}
+            <View style={s.hotspotInfo}>
+              <Text style={s.hotspotName}>{hotspot.roomName}</Text>
+              <View
+                style={s.hotspotBar}
+                accessibilityRole="progressbar"
+                accessibilityValue={{ min: 0, max: 100, now: Math.round(hotspot.percentage) }}
+              >
+                <View
+                  style={[
+                    s.hotspotBarFill,
+                    { width: `${hotspot.percentage}%`, backgroundColor: hotspot.color },
+                  ]}
+                />
+              </View>
+            </View>
+            <Text style={s.hotspotValue}>{hotspot.percentage.toFixed(1)}%</Text>
+          </View>
+        ))}
       </View>
 
-      <TouchableOpacity onPress={handleAddRoom} style={s.fabWrapper}>
-        <LinearGradient colors={['#00E676', '#00C853']} style={s.fab}>
+      <AccessibleTouchable
+        label="Add room"
+        hint="Opens a form to name a new room"
+        onPress={handleAddRoom}
+        style={s.fabWrapper}
+      >
+        <LinearGradient colors={[colors.primary, colors.primaryDark]} style={s.fab}>
           <Text style={s.fabText}>+ Add Room</Text>
         </LinearGradient>
-      </TouchableOpacity>
+      </AccessibleTouchable>
 
-      {/* Add Room Modal */}
-      <Modal visible={showAddRoomModal} animationType="fade" transparent>
-        <View style={s.modalOverlay}>
-          <View style={s.modalContent}>
-            <Text style={s.modalTitle}>Add Room</Text>
-            <TextInput
-              style={s.modalInput}
-              value={newRoomName}
-              onChangeText={setNewRoomName}
-              placeholder="Enter room name"
-              placeholderTextColor={Colors.textMuted}
-              autoFocus
-            />
-            <View style={s.modalButtons}>
-              <TouchableOpacity style={s.modalCancel} onPress={() => setShowAddRoomModal(false)}>
-                <Text style={s.modalCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={confirmAddRoom}>
-                <LinearGradient colors={['#00E676', '#00C853']} style={s.modalConfirm}>
-                  <Text style={s.modalConfirmText}>Add</Text>
-                </LinearGradient>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      {addRoomModal}
 
       {/* Assign Appliance Modal */}
-      <Modal visible={showAssignModal} animationType="slide" transparent>
+      <Modal
+        visible={showAssignModal}
+        animationType="slide"
+        transparent
+        onRequestClose={closeAssign}
+      >
         <View style={s.modalOverlay}>
           <View style={[s.modalContent, s.assignModalContent]}>
-            <Text style={s.modalTitle}>Assign Appliance</Text>
+            <Text style={s.modalTitle} accessibilityRole="header">Assign Appliance</Text>
             <ScrollView>
-              {getUnassignedAppliances().length === 0 ? (
-                <Text style={s.noAppliances}>All appliances are assigned to rooms</Text>
-              ) : (
-                getUnassignedAppliances().map(appliance => (
-                  <TouchableOpacity
+              {unassignedAppliances.length > 0 ? (
+                unassignedAppliances.map(appliance => (
+                  <AccessibleTouchable
                     key={appliance.id}
+                    label={`Assign ${appliance.name}, ${appliance.powerRating} watts, ${appliance.category}`}
+                    hint={assignRoomName ? `Adds it to ${assignRoomName}` : undefined}
                     style={s.assignItem}
-                    onPress={() => {
-                      if (assignRoomId) {
-                        assignApplianceToRoom(appliance.id, assignRoomId);
-                      }
-                      setShowAssignModal(false);
-                    }}
+                    onPress={() => handlePickAppliance(appliance.id)}
                   >
                     <Text style={s.assignItemName}>{appliance.name}</Text>
                     <Text style={s.assignItemInfo}>{appliance.powerRating}W - {appliance.category}</Text>
-                  </TouchableOpacity>
+                  </AccessibleTouchable>
                 ))
+              ) : appliances.length === 0 ? (
+                <EmptyState
+                  variant="inline"
+                  icon="🔌"
+                  title="No appliances yet"
+                  body="Add appliances from the Track tab first, then place them in rooms here."
+                />
+              ) : (
+                <EmptyState
+                  variant="inline"
+                  icon="✅"
+                  title="All appliances are assigned"
+                  body="Every appliance already belongs to a room. New appliances you add will show up here."
+                />
               )}
             </ScrollView>
-            <TouchableOpacity style={s.modalCancel} onPress={() => setShowAssignModal(false)}>
+            <AccessibleTouchable
+              label="Close"
+              hint="Closes the appliance list"
+              style={s.modalCancel}
+              onPress={closeAssign}
+            >
               <Text style={s.modalCancelText}>Close</Text>
-            </TouchableOpacity>
+            </AccessibleTouchable>
           </View>
         </View>
       </Modal>
@@ -357,10 +501,10 @@ const EnergyMapScreen = () => {
   );
 };
 
-const s = StyleSheet.create({
+const createStyles = (c: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: c.background,
   },
   header: {
     paddingTop: 54,
@@ -370,47 +514,15 @@ const s = StyleSheet.create({
   },
   headerLabel: {
     ...Typography.overline,
-    color: Colors.primary,
+    color: c.primary,
     marginBottom: 4,
   },
   headerTitle: {
     ...Typography.displaySmall,
-    color: '#fff',
-  },
-  emptyContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 40,
-    marginTop: 100,
-  },
-  emptyIcon: {
-    fontSize: 80,
-    marginBottom: Spacing.page,
-  },
-  emptyTitle: {
-    ...Typography.h1,
-    color: Colors.text,
-    marginBottom: Spacing.md,
-  },
-  emptyText: {
-    ...Typography.bodyMedium,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-    marginBottom: Spacing.xxxl,
-  },
-  addButton: {
-    paddingHorizontal: 30,
-    paddingVertical: 15,
-    borderRadius: Radius.pill,
-    ...Shadows.glow,
-  },
-  addButtonText: {
-    ...Typography.h3,
-    color: '#fff',
+    color: c.textOnDark,
   },
   legend: {
-    backgroundColor: Colors.card,
+    backgroundColor: c.card,
     margin: Spacing.page,
     padding: Spacing.lg,
     borderRadius: Radius.card,
@@ -418,7 +530,7 @@ const s = StyleSheet.create({
   },
   legendTitle: {
     ...Typography.label,
-    color: Colors.text,
+    color: c.text,
     marginBottom: Spacing.md,
   },
   legendItems: {
@@ -436,14 +548,13 @@ const s = StyleSheet.create({
     borderRadius: Spacing.xs,
     marginRight: Spacing.xs,
   },
-  legendColorModerate: { backgroundColor: '#FFC107' },
   legendText: {
     ...Typography.bodySmall,
-    color: Colors.textSecondary,
+    color: c.textSecondary,
   },
   mapContainer: {
     marginHorizontal: Spacing.page,
-    backgroundColor: Colors.card,
+    backgroundColor: c.card,
     borderRadius: Radius.card,
     ...Shadows.md,
     overflow: 'hidden',
@@ -451,7 +562,7 @@ const s = StyleSheet.create({
   map: {
     width: mapWidth,
     height: mapHeight,
-    backgroundColor: Colors.background,
+    backgroundColor: c.background,
     position: 'relative',
   },
   roomMarker: {
@@ -459,17 +570,20 @@ const s = StyleSheet.create({
     borderRadius: 100,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: Spacing.xs,
     ...Shadows.md,
   },
-  roomMarkerSelected: { borderWidth: 3, borderColor: '#fff' },
+  // c.text contrasts with the map surface in both themes (a white ring vanished on light)
+  roomMarkerSelected: { borderWidth: 3, borderColor: c.text },
+  // Heat fills are bright in both themes, so marker text uses the dark ink
   roomName: {
     ...Typography.labelSmall,
-    color: '#fff',
+    color: c.onPrimary,
     textAlign: 'center',
   },
   roomPercentage: {
     ...Typography.statSmall,
-    color: '#fff',
+    color: c.onPrimary,
     marginTop: 2,
   },
   detailsContainer: {
@@ -477,14 +591,14 @@ const s = StyleSheet.create({
     marginTop: Spacing.page,
   },
   detailsCard: {
-    backgroundColor: Colors.card,
+    backgroundColor: c.card,
     padding: Spacing.page,
     borderRadius: Radius.card,
     ...Shadows.md,
   },
   detailsTitle: {
     ...Typography.h2,
-    color: Colors.text,
+    color: c.text,
     marginBottom: Spacing.lg,
   },
   statsRow: {
@@ -498,12 +612,13 @@ const s = StyleSheet.create({
   },
   statLabel: {
     ...Typography.labelSmall,
-    color: Colors.textSecondary,
+    color: c.textSecondary,
     marginBottom: Spacing.xs,
   },
+  // Bright green text washes out on a white card; the deeper green reads better in light mode
   statValue: {
     ...Typography.statSmall,
-    color: Colors.primary,
+    color: c.primaryText,
   },
   appliancesHeaderRow: {
     flexDirection: 'row',
@@ -513,7 +628,7 @@ const s = StyleSheet.create({
   },
   appliancesTitle: {
     ...Typography.label,
-    color: Colors.text,
+    color: c.text,
   },
   assignButton: {
     paddingHorizontal: Spacing.md,
@@ -522,30 +637,25 @@ const s = StyleSheet.create({
   },
   assignButtonText: {
     ...Typography.labelSmall,
-    color: '#fff',
-  },
-  noAppliances: {
-    ...Typography.bodySmall,
-    color: Colors.textMuted,
-    fontStyle: 'italic',
+    color: c.onPrimary,
   },
   applianceItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingVertical: Spacing.sm,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.divider,
+    borderBottomColor: c.divider,
   },
   applianceName: {
     ...Typography.bodyMedium,
-    color: Colors.text,
+    color: c.text,
   },
   applianceConsumption: {
     ...Typography.label,
-    color: Colors.primary,
+    color: c.primaryText,
   },
   summaryContainer: {
-    backgroundColor: Colors.card,
+    backgroundColor: c.card,
     margin: Spacing.page,
     marginTop: Spacing.page,
     padding: Spacing.page,
@@ -554,7 +664,7 @@ const s = StyleSheet.create({
   },
   summaryTitle: {
     ...Typography.h3,
-    color: Colors.text,
+    color: c.text,
     marginBottom: Spacing.lg,
   },
   hotspotItem: {
@@ -567,6 +677,7 @@ const s = StyleSheet.create({
   },
   rankText: {
     fontSize: 18,
+    color: c.text,
   },
   hotspotInfo: {
     flex: 1,
@@ -574,12 +685,12 @@ const s = StyleSheet.create({
   },
   hotspotName: {
     ...Typography.label,
-    color: Colors.text,
+    color: c.text,
     marginBottom: Spacing.xs,
   },
   hotspotBar: {
     height: 8,
-    backgroundColor: Colors.border,
+    backgroundColor: c.border,
     borderRadius: Spacing.xs,
     overflow: 'hidden',
   },
@@ -589,7 +700,7 @@ const s = StyleSheet.create({
   },
   hotspotValue: {
     ...Typography.label,
-    color: Colors.textSecondary,
+    color: c.textSecondary,
     width: 50,
     textAlign: 'right',
   },
@@ -605,16 +716,16 @@ const s = StyleSheet.create({
   },
   fabText: {
     ...Typography.h3,
-    color: '#fff',
+    color: c.onPrimary,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: c.overlay,
     justifyContent: 'center',
     alignItems: 'center',
   },
   modalContent: {
-    backgroundColor: Colors.card,
+    backgroundColor: c.card,
     borderRadius: Radius.card,
     padding: Spacing.page,
     width: '85%',
@@ -622,36 +733,39 @@ const s = StyleSheet.create({
   },
   modalTitle: {
     ...Typography.h2,
-    color: Colors.text,
+    color: c.text,
     marginBottom: Spacing.lg,
   },
   assignModalContent: { maxHeight: '70%' },
   modalInput: {
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: c.border,
     borderRadius: Radius.sm,
     padding: Spacing.md,
     ...Typography.bodyLarge,
-    color: Colors.text,
-    backgroundColor: Colors.background,
+    color: c.text,
+    backgroundColor: c.inputBg,
     marginBottom: Spacing.lg,
   },
   modalButtons: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
+    alignItems: 'center',
     gap: Spacing.md,
   },
   modalCancel: {
     paddingHorizontal: Spacing.page,
     paddingVertical: Spacing.md,
     borderRadius: Radius.sm,
-    backgroundColor: Colors.background,
+    backgroundColor: c.background,
     alignItems: 'center',
     marginTop: Spacing.md,
   },
+  // Keeps Cancel level with Add when both sit in the button row
+  modalRowButton: { marginTop: 0 },
   modalCancelText: {
     ...Typography.h3,
-    color: Colors.textSecondary,
+    color: c.textSecondary,
   },
   modalConfirm: {
     paddingHorizontal: Spacing.page,
@@ -660,20 +774,21 @@ const s = StyleSheet.create({
   },
   modalConfirmText: {
     ...Typography.h3,
-    color: '#fff',
+    color: c.onPrimary,
   },
+  disabled: { opacity: 0.5 },
   assignItem: {
     padding: Spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.divider,
+    borderBottomColor: c.divider,
   },
   assignItemName: {
     ...Typography.h3,
-    color: Colors.text,
+    color: c.text,
   },
   assignItemInfo: {
     ...Typography.bodySmall,
-    color: Colors.textSecondary,
+    color: c.textSecondary,
     marginTop: 2,
   },
 });

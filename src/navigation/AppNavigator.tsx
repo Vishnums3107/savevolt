@@ -1,9 +1,11 @@
-import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { createStackNavigator } from '@react-navigation/stack';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Colors, Radius, Shadows, Typography } from '../theme';
+import React, { useMemo } from 'react';
+import { DarkTheme, DefaultTheme, NavigationContainer, Theme } from '@react-navigation/native';
+import { BottomTabNavigationOptions, createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { createStackNavigator, StackNavigationOptions } from '@react-navigation/stack';
+import { StyleSheet, TouchableOpacity, View } from 'react-native';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { ThemeColors, useTheme, useThemedStyles } from '../context/ThemeContext';
+import { Radius, Shadows, Typography } from '../theme';
 
 import DashboardScreen from '../screens/DashboardScreen';
 import UsageInputScreen from '../screens/UsageInputScreen';
@@ -22,38 +24,116 @@ import LeaderboardScreen from '../screens/LeaderboardScreen';
 import RecommendationsScreen from '../screens/RecommendationsScreen';
 import FeatureHubScreen from '../screens/FeatureHubScreen';
 import RemindersScreen from '../screens/RemindersScreen';
+import EditApplianceScreen from '../screens/EditApplianceScreen';
+import HouseholdsScreen from '../screens/HouseholdsScreen';
+import AccountSyncScreen from '../screens/AccountSyncScreen';
+import SmartHomeScreen from '../screens/SmartHomeScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();
 
-const TAB_ICONS: Record<string, string> = {
-  Home: '◉',
-  Track: '+',
-  Insights: '◌',
-  Goals: '★',
-  Account: '•',
+type TabName = 'Home' | 'Track' | 'Insights' | 'Goals' | 'Account';
+
+const TAB_ICONS: Record<TabName, { focused: string; unfocused: string }> = {
+  Home: { focused: 'home-variant', unfocused: 'home-variant-outline' },
+  Track: { focused: 'plus-circle', unfocused: 'plus-circle-outline' },
+  Insights: { focused: 'chart-donut', unfocused: 'chart-donut' },
+  Goals: { focused: 'trophy', unfocused: 'trophy-outline' },
+  Account: { focused: 'account-circle', unfocused: 'account-circle-outline' },
 };
 
-const TabIcon = ({ name, focused }: { name: string; focused: boolean }) => (
-  <View style={tabStyles.iconWrap}>
-    <Text style={[tabStyles.icon, focused && tabStyles.iconActive]}>{TAB_ICONS[name]}</Text>
-    {focused && <View style={tabStyles.dot} />}
-  </View>
-);
+/** Active tab tint: the brighter green reads better on the dark tab bar. */
+const activeTabColor = (c: ThemeColors, isDark: boolean) => (isDark ? c.primary : c.primaryDark);
 
-const HomeTabIcon = ({ focused }: { focused: boolean }) => <TabIcon name="Home" focused={focused} />;
-const TrackTabIcon = ({ focused }: { focused: boolean }) => <TabIcon name="Track" focused={focused} />;
-const InsightsTabIcon = ({ focused }: { focused: boolean }) => <TabIcon name="Insights" focused={focused} />;
-const GoalsTabIcon = ({ focused }: { focused: boolean }) => <TabIcon name="Goals" focused={focused} />;
-const AccountTabIcon = ({ focused }: { focused: boolean }) => <TabIcon name="Account" focused={focused} />;
+const createTabStyles = (c: ThemeColors, isDark: boolean) =>
+  StyleSheet.create({
+    bar: {
+      height: 68,
+      paddingBottom: 9,
+      paddingTop: 7,
+      backgroundColor: c.tabBar,
+      // The dark bar is close to the background, so a hairline keeps it separated
+      borderTopWidth: isDark ? StyleSheet.hairlineWidth : 0,
+      borderTopColor: c.border,
+      ...Shadows.lg,
+    },
+    label: { ...Typography.labelSmall, fontSize: 10, letterSpacing: 0.2 },
+    iconWrap: { alignItems: 'center', justifyContent: 'center' },
+    dot: { width: 4, height: 4, borderRadius: 2, marginTop: 2, backgroundColor: activeTabColor(c, isDark) },
+  });
 
-const BackButton = ({ navigation }: { navigation: { goBack: () => void } }) => (
-  <TouchableOpacity onPress={navigation.goBack} style={stackStyles.backButton} activeOpacity={0.75} accessibilityLabel="Go back">
-    <Text style={stackStyles.backButtonText}>‹</Text>
-  </TouchableOpacity>
-);
+const TabIcon = ({ name, focused, color }: { name: TabName; focused: boolean; color: string }) => {
+  const s = useThemedStyles(createTabStyles);
+  return (
+    <View style={s.iconWrap}>
+      <Icon
+        name={focused ? TAB_ICONS[name].focused : TAB_ICONS[name].unfocused}
+        size={24}
+        color={color}
+        accessible={false}
+        importantForAccessibility="no"
+      />
+      {focused && <View style={s.dot} />}
+    </View>
+  );
+};
 
-const sharedStackOptions = ({ navigation }: any) => ({
+const tabOptions = (name: TabName): BottomTabNavigationOptions => ({
+  tabBarLabel: name,
+  tabBarAccessibilityLabel: `${name} tab`,
+  tabBarIcon: ({ focused, color }) => <TabIcon name={name} focused={focused} color={color} />,
+});
+
+const TAB_OPTIONS: Record<TabName, BottomTabNavigationOptions> = {
+  Home: tabOptions('Home'),
+  Track: tabOptions('Track'),
+  Insights: tabOptions('Insights'),
+  Goals: tabOptions('Goals'),
+  Account: tabOptions('Account'),
+};
+
+const createStackStyles = (c: ThemeColors) =>
+  StyleSheet.create({
+    backButton: {
+      width: 36,
+      height: 36,
+      marginLeft: 16,
+      marginTop: 4,
+      borderRadius: Radius.pill,
+      backgroundColor: c.backButtonBg,
+      alignItems: 'center',
+      justifyContent: 'center',
+      ...Shadows.sm,
+    },
+  });
+
+// Extends the 36pt visual button to a 44pt touch target
+const BACK_HIT_SLOP = { top: 4, bottom: 4, left: 4, right: 4 };
+
+const BackButton = ({ navigation }: { navigation: { goBack: () => void } }) => {
+  const s = useThemedStyles(createStackStyles);
+  const { colors } = useTheme();
+  return (
+    <TouchableOpacity
+      onPress={() => navigation.goBack()}
+      style={s.backButton}
+      activeOpacity={0.75}
+      hitSlop={BACK_HIT_SLOP}
+      accessibilityRole="button"
+      accessibilityLabel="Go back"
+    >
+      <Icon
+        name="chevron-left"
+        size={26}
+        color={colors.text}
+        accessible={false}
+        importantForAccessibility="no"
+      />
+    </TouchableOpacity>
+  );
+};
+
+const sharedStackOptions = ({ navigation }: { navigation: { goBack: () => void } }): StackNavigationOptions => ({
   headerTransparent: true,
   headerTitle: '',
   headerShadowVisible: false,
@@ -76,7 +156,9 @@ const TrackStack = () => (
     <Stack.Screen name="TrackHome" component={TrackHome} options={{ headerShown: false }} />
     <Stack.Screen name="AddAppliance" component={UsageInputScreen} />
     <Stack.Screen name="Audit" component={EnergyAuditScreen} />
+    <Stack.Screen name="EditAppliance" component={EditApplianceScreen} />
     <Stack.Screen name="Map" component={EnergyMapScreen} />
+    <Stack.Screen name="SmartHome" component={SmartHomeScreen} />
   </Stack.Navigator>
 );
 
@@ -107,58 +189,54 @@ const AccountStack = () => (
     <Stack.Screen name="Chat" component={ChatScreen} />
     <Stack.Screen name="Reminders" component={RemindersScreen} />
     <Stack.Screen name="Settings" component={SettingsScreen} />
+    <Stack.Screen name="Households" component={HouseholdsScreen} />
+    <Stack.Screen name="AccountSync" component={AccountSyncScreen} />
   </Stack.Navigator>
 );
 
-const AppNavigator = () => (
-  <NavigationContainer>
-    <Tab.Navigator
-      screenOptions={{
-        headerShown: false,
-        tabBarActiveTintColor: Colors.primaryDark,
-        tabBarInactiveTintColor: Colors.tabInactive,
-        tabBarStyle: tabStyles.bar,
-        tabBarLabelStyle: tabStyles.label,
-      }}
-    >
-      <Tab.Screen name="Home" component={HomeStack} options={{ tabBarLabel: 'Home', tabBarIcon: HomeTabIcon }} />
-      <Tab.Screen name="Track" component={TrackStack} options={{ tabBarLabel: 'Track', tabBarIcon: TrackTabIcon }} />
-      <Tab.Screen name="Insights" component={InsightsStack} options={{ tabBarLabel: 'Insights', tabBarIcon: InsightsTabIcon }} />
-      <Tab.Screen name="Goals" component={GoalsStack} options={{ tabBarLabel: 'Goals', tabBarIcon: GoalsTabIcon }} />
-      <Tab.Screen name="Account" component={AccountStack} options={{ tabBarLabel: 'Account', tabBarIcon: AccountTabIcon }} />
-    </Tab.Navigator>
-  </NavigationContainer>
-);
+const AppNavigator = () => {
+  const { colors, isDark } = useTheme();
+  const s = useThemedStyles(createTabStyles);
 
-const tabStyles = StyleSheet.create({
-  bar: {
-    height: 68,
-    paddingBottom: 9,
-    paddingTop: 7,
-    backgroundColor: Colors.tabBar,
-    borderTopWidth: 0,
-    ...Shadows.lg,
-  },
-  label: { ...Typography.labelSmall, fontSize: 10, letterSpacing: 0.2 },
-  iconWrap: { height: 26, alignItems: 'center', justifyContent: 'center' },
-  icon: { fontSize: 21, lineHeight: 22, color: Colors.tabInactive, fontWeight: '700' },
-  iconActive: { color: Colors.primaryDark },
-  dot: { width: 4, height: 4, borderRadius: 2, marginTop: 2, backgroundColor: Colors.primaryDark },
-});
+  // Stack cards and tab scenes paint theme.colors.background, so matching it avoids a white
+  // flash behind transitions in dark mode.
+  const navigationTheme = useMemo<Theme>(() => {
+    const base = isDark ? DarkTheme : DefaultTheme;
+    return {
+      ...base,
+      colors: {
+        ...base.colors,
+        primary: colors.primary,
+        background: colors.background,
+        card: colors.card,
+        text: colors.text,
+        border: colors.border,
+      },
+    };
+  }, [colors, isDark]);
 
-const stackStyles = StyleSheet.create({
-  backButton: {
-    width: 36,
-    height: 36,
-    marginLeft: 16,
-    marginTop: 4,
-    borderRadius: Radius.pill,
-    backgroundColor: 'rgba(255,255,255,0.92)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Shadows.sm,
-  },
-  backButtonText: { fontSize: 30, lineHeight: 31, marginTop: -3, color: Colors.dark, fontWeight: '400' },
-});
+  const tabScreenOptions = useMemo<BottomTabNavigationOptions>(
+    () => ({
+      headerShown: false,
+      tabBarActiveTintColor: activeTabColor(colors, isDark),
+      tabBarInactiveTintColor: colors.tabInactive,
+      tabBarStyle: s.bar,
+      tabBarLabelStyle: s.label,
+    }),
+    [colors, isDark, s],
+  );
+
+  return (
+    <NavigationContainer theme={navigationTheme}>
+      <Tab.Navigator screenOptions={tabScreenOptions}>
+        <Tab.Screen name="Home" component={HomeStack} options={TAB_OPTIONS.Home} />
+        <Tab.Screen name="Track" component={TrackStack} options={TAB_OPTIONS.Track} />
+        <Tab.Screen name="Insights" component={InsightsStack} options={TAB_OPTIONS.Insights} />
+        <Tab.Screen name="Goals" component={GoalsStack} options={TAB_OPTIONS.Goals} />
+        <Tab.Screen name="Account" component={AccountStack} options={TAB_OPTIONS.Account} />
+      </Tab.Navigator>
+    </NavigationContainer>
+  );
+};
 
 export default AppNavigator;

@@ -9,6 +9,7 @@ export interface Appliance {
   category: ApplianceCategory;
   createdAt: string;
   isActive: boolean;
+  hardwareLink?: { provider: 'home-assistant'; deviceId: string; powerSensorId?: string };
 }
 
 export enum ApplianceCategory {
@@ -164,6 +165,32 @@ export interface AppSettings {
   weatherLocation: string;
   darkMode: boolean;
   voiceEnabled: boolean;
+  geminiApiKey?: string;
+}
+
+export interface Household {
+  id: string;
+  name: string;
+  createdAt: string;
+  cloudId?: string;
+  cloudOwnerId?: string;
+  cloudRevision?: number;
+}
+
+/** Portable household data. Device preferences and credentials stay on the device. */
+export interface HouseholdData {
+  appliances: Appliance[];
+  usageRecords: UsageRecord[];
+  reminders: Reminder[];
+  goals: UserGoal[];
+  streak: Streak;
+  badges: Badge[];
+  rooms: Room[];
+  communityGoals: CommunityGoal[];
+  challenges: Challenge[];
+  snapshots: DailySnapshot[];
+  activeTimers: CountdownTimer[];
+  settings: Pick<AppSettings, 'electricityRate' | 'currency' | 'co2Factor' | 'weatherLocation'>;
 }
 
 // New types for additional features

@@ -1,4 +1,4 @@
-import { fetchWeatherData, getSeason } from '../src/utils/weather';
+import { fetchWeatherData, getSeason } from '../src/services/api/weatherApi';
 
 describe('weather utilities', () => {
   const originalFetch = global.fetch;

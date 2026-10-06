@@ -1,495 +1,127 @@
-/**
- * Cloud Sync Service
- * Syncs data across multiple devices using Firebase Firestore
- */
+import { getApps } from '@react-native-firebase/app';
+import {
+  createUserWithEmailAndPassword, getAuth, onAuthStateChanged,
+  sendPasswordResetEmail, signInWithEmailAndPassword, signOut,
+} from '@react-native-firebase/auth';
+import {
+  collection, doc, FirebaseFirestoreTypes, getDocFromServer, getDocsFromServer, getFirestore, runTransaction, serverTimestamp,
+} from '@react-native-firebase/firestore';
+import { Household, HouseholdData } from '../types';
+import { validateHouseholdData } from './sync/householdData';
 
-import firestore from '@react-native-firebase/firestore';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Appliance, Goal, Reminder, Achievement } from '../types';
+export interface CloudAccount { uid: string; email: string | null }
+export interface CloudHome { id: string; name: string; revision: number; updatedAt: string | null }
+export interface CloudBackup extends CloudHome { data: HouseholdData }
 
-export interface UserData {
-  userId: string;
-  email?: string;
-  displayName?: string;
-  createdAt: Date;
-  lastSync: Date;
-  deviceId: string;
-}
-
-export interface SyncStatus {
-  isSyncing: boolean;
-  lastSyncTime?: Date;
-  syncError?: string;
-  pendingChanges: number;
-}
-
-class CloudSyncService {
-  private static instance: CloudSyncService;
-  private userId: string | null = null;
-  private deviceId: string = '';
-  private syncStatus: SyncStatus = {
-    isSyncing: false,
-    pendingChanges: 0,
-  };
-  private syncListeners: ((status: SyncStatus) => void)[] = [];
-  private unsubscribers: (() => void)[] = [];
-  private isAvailable: boolean = true;
-
-  private constructor() {}
-
-  public static getInstance(): CloudSyncService {
-    if (!CloudSyncService.instance) {
-      CloudSyncService.instance = new CloudSyncService();
-    }
-    return CloudSyncService.instance;
+const validId = (id: string) => /^[a-zA-Z0-9_-]{1,160}$/.test(id);
+const MAX_BACKUP_BYTES = 800000;
+const utf8Bytes = (value: string) => {
+  let size = 0;
+  for (const character of value) {
+    const code = character.codePointAt(0)!;
+    size += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
   }
+  return size;
+};
 
-  /**
-   * Initialize cloud sync
-   */
-  public async initialize(userId: string): Promise<void> {
-    try {
-      this.userId = userId;
-      this.deviceId = await this.getDeviceId();
-
-      try {
-        // Enable offline persistence
-        await firestore().settings({
-          persistence: true,
-          cacheSizeBytes: firestore.CACHE_SIZE_UNLIMITED,
-        });
-
-        // Set up real-time listeners
-        await this.setupRealtimeSync();
-      } catch (error) {
-        console.warn('Firebase is not configured, cloud sync disabled.', error);
-        this.isAvailable = false;
-      }
-
-      console.log('Cloud sync initialized for user:', userId);
-    } catch (error) {
-      console.error('Failed to initialize cloud sync:', error);
-      this.updateSyncStatus({ syncError: 'Initialization failed' });
-    }
+export const cloudErrorMessage = (error: unknown): string => {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : '';
+  switch (code) {
+    case 'auth/invalid-email': return 'Enter a valid email address.';
+    case 'auth/weak-password': return 'Choose a password with at least 6 characters.';
+    case 'auth/email-already-in-use': return 'This email already has an account. Sign in instead.';
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password':
+    case 'auth/user-not-found': return 'Check your email and password, then try again.';
+    case 'auth/too-many-requests': return 'Too many attempts. Please try again later.';
+    case 'auth/network-request-failed':
+    case 'firestore/unavailable': return 'Connect to the internet and try again. Your local data is safe.';
+    case 'firestore/permission-denied': return 'Your account does not have access to this cloud copy.';
+    default: return error instanceof Error ? error.message : 'Cloud sync failed. Please try again.';
   }
+};
 
-  /**
-   * Setup real-time sync listeners
-   */
-  private async setupRealtimeSync(): Promise<void> {
-    if (!this.userId) return;
-
-    const collections = ['appliances', 'goals', 'reminders', 'achievements', 'rooms', 'challenges'];
-
-    collections.forEach((collection) => {
-      try {
-        const unsubscribe = firestore()
-          .collection('users')
-          .doc(this.userId!)
-          .collection(collection)
-          .onSnapshot(
-            (snapshot) => {
-              this.handleRealtimeUpdate(collection, snapshot);
-            },
-            (error) => {
-              console.error(`Error listening to ${collection}:`, error);
-            }
-          );
-
-        this.unsubscribers.push(unsubscribe);
-      } catch (error) {
-        console.error(`Error setting up listener for ${collection}:`, error);
+/** Explicit account backup/restore. No cloud operation writes legacy storage keys. */
+export class CloudSyncService {
+  isAvailable(): boolean {
+    try { return getApps().length > 0; } catch { return false; }
+  }
+  private auth() {
+    if (!this.isAvailable()) throw new Error('Cloud sync is unavailable in this build. Your homes work offline.');
+    return getAuth();
+  }
+  private account(): CloudAccount {
+    const user = this.auth().currentUser;
+    if (!user) throw new Error('Sign in to use cloud sync.');
+    return { uid: user.uid, email: user.email };
+  }
+  observeAccount(listener: (account: CloudAccount | null) => void): () => void {
+    if (!this.isAvailable()) { listener(null); return () => {}; }
+    return onAuthStateChanged(this.auth(), user => listener(user ? { uid: user.uid, email: user.email } : null));
+  }
+  async signIn(email: string, password: string): Promise<void> {
+    if (!email.trim() || !password) throw new Error('Enter your email and password.');
+    await signInWithEmailAndPassword(this.auth(), email.trim(), password);
+  }
+  async createAccount(email: string, password: string): Promise<void> {
+    if (!email.trim()) throw new Error('Enter your email address.');
+    if (password.length < 6) throw new Error('Choose a password with at least 6 characters.');
+    await createUserWithEmailAndPassword(this.auth(), email.trim(), password);
+  }
+  async resetPassword(email: string): Promise<void> {
+    if (!email.trim()) throw new Error('Enter your email address first.');
+    await sendPasswordResetEmail(this.auth(), email.trim());
+  }
+  async signOut(): Promise<void> { await signOut(this.auth()); }
+  async listHomes(): Promise<CloudHome[]> {
+    const { uid } = this.account();
+    const snapshot: FirebaseFirestoreTypes.QuerySnapshot = await getDocsFromServer(collection(getFirestore(), 'users', uid, 'households'));
+    return snapshot.docs.flatMap(item => {
+      const value = item.data();
+      if (value.version !== 1 || typeof value.name !== 'string' || !Number.isInteger(value.revision) || value.revision < 1) return [];
+      return [{ id: item.id, name: value.name, revision: value.revision,
+        updatedAt: value.updatedAt?.toDate?.().toISOString() ?? null }];
+    }).sort((a, b) => a.name.localeCompare(b.name));
+  }
+  async upload(home: Household, input: HouseholdData, asNewCopy = false): Promise<{ ownerId: string; id: string; revision: number }> {
+    const { uid } = this.account();
+    const data = validateHouseholdData(input);
+    // A serialized payload avoids Firestore's nested-array restrictions and
+    // never includes device credentials or preferences.
+    const payload = JSON.stringify(data);
+    if (utf8Bytes(payload) > MAX_BACKUP_BYTES) throw new Error('This home is too large for cloud backup. Export a report to keep a local copy.');
+    const homes = collection(getFirestore(), 'users', uid, 'households');
+    const linked = !asNewCopy && home.cloudOwnerId === uid && home.cloudId && validId(home.cloudId);
+    const reference = linked ? doc(homes, home.cloudId!) : doc(homes);
+    const expectedRevision = linked ? home.cloudRevision ?? 0 : 0;
+    const revision = await runTransaction(getFirestore(), async transaction => {
+      const remote = await transaction.get(reference);
+      const actualRevision = remote.exists() ? remote.data()?.revision : 0;
+      if (actualRevision !== expectedRevision) {
+        throw new Error('The cloud copy changed on another device. Restore it as a separate home to review it, or save a new cloud copy.');
       }
+      const nextRevision = expectedRevision + 1;
+      transaction.set(reference, { version: 1, name: home.name, revision: nextRevision, payload,
+        updatedAt: serverTimestamp() });
+      return nextRevision;
     });
+    return { ownerId: uid, id: reference.id, revision };
   }
-
-  /**
-   * Handle real-time updates from Firestore
-   */
-  private async handleRealtimeUpdate(collection: string, snapshot: any): Promise<void> {
-    try {
-      const changes = snapshot.docChanges();
-      
-      for (const change of changes) {
-        const data = change.doc.data();
-        const docId = change.doc.id;
-
-        if (data.deviceId === this.deviceId) {
-          // Skip changes from this device to avoid loops
-          continue;
-        }
-
-        if (change.type === 'added' || change.type === 'modified') {
-          await this.mergeRemoteData(collection, docId, data);
-        } else if (change.type === 'removed') {
-          await this.removeLocalData(collection, docId);
-        }
-      }
-
-      this.updateSyncStatus({ lastSyncTime: new Date() });
-    } catch (error) {
-      console.error('Error handling real-time update:', error);
+  async download(id: string): Promise<CloudBackup> {
+    if (!validId(id)) throw new Error('Invalid cloud home.');
+    const { uid } = this.account();
+    const snapshot = await getDocFromServer(doc(getFirestore(), 'users', uid, 'households', id));
+    const value = snapshot.data();
+    if (!snapshot.exists() || !value) throw new Error('This cloud home no longer exists.');
+    if (value.version !== 1 || typeof value.payload !== 'string' || typeof value.name !== 'string' ||
+        !Number.isInteger(value.revision) || value.revision < 1 || utf8Bytes(value.payload) > MAX_BACKUP_BYTES) {
+      throw new Error('This cloud backup has an unsupported format.');
     }
-  }
-
-  /**
-   * Sync appliances to cloud
-   */
-  public async syncAppliances(appliances: Appliance[]): Promise<void> {
-    if (!this.userId || !this.isAvailable) return;
-
-    this.updateSyncStatus({ isSyncing: true });
-
-    try {
-      const batch = firestore().batch();
-      const collectionRef = firestore()
-        .collection('users')
-        .doc(this.userId)
-        .collection('appliances');
-
-      appliances.forEach((appliance) => {
-        const docRef = collectionRef.doc(appliance.id);
-        batch.set(docRef, {
-          ...appliance,
-          deviceId: this.deviceId,
-          syncedAt: firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-      });
-
-      await batch.commit();
-      this.updateSyncStatus({ isSyncing: false, lastSyncTime: new Date() });
-    } catch (error) {
-      console.error('Failed to sync appliances:', error);
-      this.updateSyncStatus({ isSyncing: false, syncError: 'Sync failed' });
-    }
-  }
-
-  /**
-   * Sync goals to cloud
-   */
-  public async syncGoals(goals: Goal[]): Promise<void> {
-    if (!this.userId || !this.isAvailable) return;
-
-    this.updateSyncStatus({ isSyncing: true });
-
-    try {
-      const batch = firestore().batch();
-      const collectionRef = firestore()
-        .collection('users')
-        .doc(this.userId)
-        .collection('goals');
-
-      goals.forEach((goal) => {
-        const docRef = collectionRef.doc(goal.id);
-        batch.set(docRef, {
-          ...goal,
-          deviceId: this.deviceId,
-          syncedAt: firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-      });
-
-      await batch.commit();
-      this.updateSyncStatus({ isSyncing: false, lastSyncTime: new Date() });
-    } catch (error) {
-      console.error('Failed to sync goals:', error);
-      this.updateSyncStatus({ isSyncing: false, syncError: 'Sync failed' });
-    }
-  }
-
-  /**
-   * Sync reminders to cloud
-   */
-  public async syncReminders(reminders: Reminder[]): Promise<void> {
-    if (!this.userId || !this.isAvailable) return;
-
-    this.updateSyncStatus({ isSyncing: true });
-
-    try {
-      const batch = firestore().batch();
-      const collectionRef = firestore()
-        .collection('users')
-        .doc(this.userId)
-        .collection('reminders');
-
-      reminders.forEach((reminder) => {
-        const docRef = collectionRef.doc(reminder.id);
-        batch.set(docRef, {
-          ...reminder,
-          deviceId: this.deviceId,
-          syncedAt: firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-      });
-
-      await batch.commit();
-      this.updateSyncStatus({ isSyncing: false, lastSyncTime: new Date() });
-    } catch (error) {
-      console.error('Failed to sync reminders:', error);
-      this.updateSyncStatus({ isSyncing: false, syncError: 'Sync failed' });
-    }
-  }
-
-  /**
-   * Sync achievements to cloud
-   */
-  public async syncAchievements(achievements: Achievement[]): Promise<void> {
-    if (!this.userId || !this.isAvailable) return;
-
-    this.updateSyncStatus({ isSyncing: true });
-
-    try {
-      const batch = firestore().batch();
-      const collectionRef = firestore()
-        .collection('users')
-        .doc(this.userId)
-        .collection('achievements');
-
-      achievements.forEach((achievement) => {
-        const docRef = collectionRef.doc(achievement.id);
-        batch.set(docRef, {
-          ...achievement,
-          deviceId: this.deviceId,
-          syncedAt: firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-      });
-
-      await batch.commit();
-      this.updateSyncStatus({ isSyncing: false, lastSyncTime: new Date() });
-    } catch (error) {
-      console.error('Failed to sync achievements:', error);
-      this.updateSyncStatus({ isSyncing: false, syncError: 'Sync failed' });
-    }
-  }
-
-  /**
-   * Sync custom data to cloud
-   */
-  public async syncCustomData(collection: string, data: any[]): Promise<void> {
-    if (!this.userId || !this.isAvailable) return;
-
-    this.updateSyncStatus({ isSyncing: true });
-
-    try {
-      const batch = firestore().batch();
-      const collectionRef = firestore()
-        .collection('users')
-        .doc(this.userId)
-        .collection(collection);
-
-      data.forEach((item) => {
-        const docRef = collectionRef.doc(item.id);
-        batch.set(docRef, {
-          ...item,
-          deviceId: this.deviceId,
-          syncedAt: firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-      });
-
-      await batch.commit();
-      this.updateSyncStatus({ isSyncing: false, lastSyncTime: new Date() });
-    } catch (error) {
-      console.error(`Failed to sync ${collection}:`, error);
-      this.updateSyncStatus({ isSyncing: false, syncError: 'Sync failed' });
-    }
-  }
-
-  /**
-   * Fetch data from cloud
-   */
-  public async fetchFromCloud<T>(collection: string): Promise<T[]> {
-    if (!this.userId || !this.isAvailable) return [];
-
-    try {
-      const snapshot = await firestore()
-        .collection('users')
-        .doc(this.userId)
-        .collection(collection)
-        .get();
-
-      return snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      })) as T[];
-    } catch (error) {
-      console.error(`Failed to fetch ${collection}:`, error);
-      return [];
-    }
-  }
-
-  /**
-   * Delete item from cloud
-   */
-  public async deleteFromCloud(collection: string, itemId: string): Promise<void> {
-    if (!this.userId || !this.isAvailable) return;
-
-    try {
-      await firestore()
-        .collection('users')
-        .doc(this.userId)
-        .collection(collection)
-        .doc(itemId)
-        .delete();
-    } catch (error) {
-      console.error(`Failed to delete from ${collection}:`, error);
-    }
-  }
-
-  /**
-   * Merge remote data with local data
-   */
-  private async mergeRemoteData(collection: string, docId: string, data: any): Promise<void> {
-    try {
-      const storageKey = `${collection}_data`;
-      const stored = await AsyncStorage.getItem(storageKey);
-      const localData = stored ? JSON.parse(stored) : [];
-
-      // Check if item exists locally
-      const existingIndex = localData.findIndex((item: any) => item.id === docId);
-
-      if (existingIndex >= 0) {
-        // Resolve conflict: use server timestamp if available
-        const localItem = localData[existingIndex];
-        const remoteTimestamp = data.syncedAt?.toDate?.() || new Date(data.syncedAt);
-        const localTimestamp = new Date(localItem.syncedAt || 0);
-
-        if (remoteTimestamp > localTimestamp) {
-          // Remote is newer, update local
-          localData[existingIndex] = { ...data, id: docId };
-        }
-      } else {
-        // New item, add to local
-        localData.push({ ...data, id: docId });
-      }
-
-      await AsyncStorage.setItem(storageKey, JSON.stringify(localData));
-    } catch (error) {
-      console.error('Error merging remote data:', error);
-    }
-  }
-
-  /**
-   * Remove local data
-   */
-  private async removeLocalData(collection: string, docId: string): Promise<void> {
-    try {
-      const storageKey = `${collection}_data`;
-      const stored = await AsyncStorage.getItem(storageKey);
-      const localData = stored ? JSON.parse(stored) : [];
-
-      const filtered = localData.filter((item: any) => item.id !== docId);
-      await AsyncStorage.setItem(storageKey, JSON.stringify(filtered));
-    } catch (error) {
-      console.error('Error removing local data:', error);
-    }
-  }
-
-  /**
-   * Get device ID
-   */
-  private async getDeviceId(): Promise<string> {
-    try {
-      let deviceId = await AsyncStorage.getItem('device_id');
-      if (!deviceId) {
-        deviceId = `device_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-        await AsyncStorage.setItem('device_id', deviceId);
-      }
-      return deviceId;
-    } catch (error) {
-      console.error('Error getting device ID:', error);
-      return `device_${Date.now()}`;
-    }
-  }
-
-  /**
-   * Update sync status
-   */
-  private updateSyncStatus(update: Partial<SyncStatus>): void {
-    this.syncStatus = { ...this.syncStatus, ...update };
-    this.notifySyncListeners();
-  }
-
-  /**
-   * Add sync status listener
-   */
-  public addSyncListener(listener: (status: SyncStatus) => void): void {
-    this.syncListeners.push(listener);
-  }
-
-  /**
-   * Remove sync status listener
-   */
-  public removeSyncListener(listener: (status: SyncStatus) => void): void {
-    this.syncListeners = this.syncListeners.filter((l) => l !== listener);
-  }
-
-  /**
-   * Notify all sync listeners
-   */
-  private notifySyncListeners(): void {
-    this.syncListeners.forEach((listener) => listener(this.syncStatus));
-  }
-
-  /**
-   * Get current sync status
-   */
-  public getSyncStatus(): SyncStatus {
-    return { ...this.syncStatus };
-  }
-
-  /**
-   * Force full sync
-   */
-  public async forceSync(): Promise<void> {
-    if (!this.userId || !this.isAvailable) return;
-
-    this.updateSyncStatus({ isSyncing: true });
-
-    try {
-      // Sync all collections
-      const collections = ['appliances', 'goals', 'reminders', 'achievements', 'rooms', 'challenges'];
-
-      for (const collection of collections) {
-        const storageKey = `${collection}_data`;
-        const stored = await AsyncStorage.getItem(storageKey);
-        const localData = stored ? JSON.parse(stored) : [];
-
-        if (localData.length > 0) {
-          await this.syncCustomData(collection, localData);
-        }
-      }
-
-      this.updateSyncStatus({ 
-        isSyncing: false, 
-        lastSyncTime: new Date(),
-        syncError: undefined 
-      });
-    } catch (error) {
-      console.error('Force sync failed:', error);
-      this.updateSyncStatus({ isSyncing: false, syncError: 'Force sync failed' });
-    }
-  }
-
-  /**
-   * Cleanup and disconnect
-   */
-  public cleanup(): void {
-    this.unsubscribers.forEach((unsubscribe) => unsubscribe());
-    this.unsubscribers = [];
-    this.syncListeners = [];
-  }
-
-  /**
-   * Check if user is authenticated
-   */
-  public isAuthenticated(): boolean {
-    return this.userId !== null;
-  }
-
-  /**
-   * Get user ID
-   */
-  public getUserId(): string | null {
-    return this.userId;
+    let parsed: unknown;
+    try { parsed = JSON.parse(value.payload); } catch { throw new Error('This cloud backup is unreadable.'); }
+    return { id, name: value.name, revision: value.revision, data: validateHouseholdData(parsed),
+      updatedAt: value.updatedAt?.toDate?.().toISOString() ?? null };
   }
 }
 
-export default CloudSyncService.getInstance();
+export default new CloudSyncService();

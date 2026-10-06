@@ -1,0 +1,31 @@
+package com.savevolt
+
+import com.facebook.react.BaseReactPackage
+import com.facebook.react.bridge.NativeModule
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.module.model.ReactModuleInfo
+import com.facebook.react.module.model.ReactModuleInfoProvider
+
+/** Registers SaveVolt's app-specific native modules. */
+class SaveVoltPackage : BaseReactPackage() {
+
+  override fun getModule(name: String, reactContext: ReactApplicationContext): NativeModule? =
+      when (name) {
+        ExactAlarmModule.NAME -> ExactAlarmModule(reactContext)
+        else -> null
+      }
+
+  override fun getReactModuleInfoProvider(): ReactModuleInfoProvider = ReactModuleInfoProvider {
+    mapOf(
+        ExactAlarmModule.NAME to
+            ReactModuleInfo(
+                name = ExactAlarmModule.NAME,
+                className = ExactAlarmModule::class.java.name,
+                canOverrideExistingModule = false,
+                needsEagerInit = false,
+                isCxxModule = false,
+                isTurboModule = false,
+            ),
+    )
+  }
+}

@@ -66,6 +66,12 @@ yarn-error.log
 # testing
 /coverage
 
+# Per-environment Firebase configuration and backend dependencies
+android/app/google-services.json
+ios/**/GoogleService-Info.plist
+.firebase/
+firebase-debug.log
+
 # Yarn
 .yarn/*
 !.yarn/patches

@@ -6,6 +6,14 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 
 jest.mock('react-native-linear-gradient', () => 'LinearGradient');
 
+// Render the glyph name as text so tests don't depend on the icon font
+jest.mock('react-native-vector-icons/MaterialCommunityIcons', () => {
+  const React = require('react');
+  const { Text } = require('react-native');
+  const Icon = ({ name, ...props }) => React.createElement(Text, props, name);
+  return { __esModule: true, default: Icon };
+});
+
 jest.mock('react-native-gesture-handler', () => ({
   GestureHandlerRootView: 'GestureHandlerRootView',
 }));
@@ -35,12 +43,30 @@ jest.mock('react-native-fs', () => ({
 }));
 jest.mock('react-native-view-shot', () => 'ViewShot');
 
-jest.mock('@react-navigation/native', () => ({
-  NavigationContainer: ({ children }) => {
-    const React = require('react');
-    return React.createElement(React.Fragment, null, children);
-  },
-}));
+jest.mock('@react-navigation/native', () => {
+  const navigationTheme = (dark) => ({
+    dark,
+    colors: { primary: '', background: '', card: '', text: '', border: '', notification: '' },
+    fonts: {
+      regular: { fontFamily: 'System', fontWeight: '400' },
+      medium: { fontFamily: 'System', fontWeight: '500' },
+      bold: { fontFamily: 'System', fontWeight: '600' },
+      heavy: { fontFamily: 'System', fontWeight: '700' },
+    },
+  });
+  return {
+    NavigationContainer: ({ children }) => {
+      const React = require('react');
+      return React.createElement(React.Fragment, null, children);
+    },
+    DefaultTheme: navigationTheme(false),
+    DarkTheme: navigationTheme(true),
+    useIsFocused: () => true,
+    useFocusEffect: jest.fn(),
+    useNavigation: () => ({ navigate: jest.fn(), goBack: jest.fn(), setOptions: jest.fn() }),
+    useRoute: () => ({ params: {} }),
+  };
+});
 jest.mock('@react-navigation/bottom-tabs', () => ({
   createBottomTabNavigator: () => {
     const React = require('react');
@@ -86,6 +112,16 @@ jest.mock('@react-native-firebase/messaging', () => {
   messaging.AuthorizationStatus = { AUTHORIZED: 1, PROVISIONAL: 2 };
   return messaging;
 });
+
+jest.mock('@react-native-firebase/app', () => ({ getApps: jest.fn(() => []) }));
+jest.mock('@react-native-firebase/auth', () => ({
+  getAuth: jest.fn(() => ({ currentUser: null })),
+  onAuthStateChanged: jest.fn((_auth, callback) => { callback(null); return jest.fn(); }),
+  signInWithEmailAndPassword: jest.fn(() => Promise.resolve()),
+  createUserWithEmailAndPassword: jest.fn(() => Promise.resolve()),
+  sendPasswordResetEmail: jest.fn(() => Promise.resolve()),
+  signOut: jest.fn(() => Promise.resolve()),
+}));
 
 jest.mock('@react-native-firebase/firestore', () => {
   const firestore = () => ({

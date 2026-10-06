@@ -2,6 +2,11 @@ apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
+// Cloud features are optional; local-first builds work without a Firebase project.
+if (file("google-services.json").exists()) {
+    apply plugin: "com.google.gms.google-services"
+}
+
 /**
  * This is the configuration block to customize your React Native Android app.
  * By default you don't need to apply any configuration, just uncomment the lines you need.
@@ -118,3 +123,13 @@ dependencies {
         implementation jscFlavor
     }
 }
+
+/**
+ * react-native-vector-icons: copy only the icon fonts the app uses into the APK assets
+ * (see node_modules/react-native-vector-icons/README.md, "Android Setup").
+ */
+project.ext.vectoricons = [
+    iconFontNames: [ 'MaterialCommunityIcons.ttf' ]
+]
+
+apply from: file("../../node_modules/react-native-vector-icons/fonts.gradle")

@@ -1,4 +1,4 @@
-import { WeatherData } from '../types';
+import { WeatherData } from '../../types';
 
 const GEOCODING_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
@@ -46,10 +46,6 @@ const getCondition = (weatherCode: number): string => {
   return 'Unknown';
 };
 
-/**
- * Fetch current weather without an API key. A saved city is resolved through
- * Open-Meteo's public geocoding and forecast endpoints.
- */
 export const fetchWeatherData = async (location: string): Promise<WeatherData> => {
   const safeLocation = location.trim() || 'New York';
 
@@ -86,7 +82,6 @@ export const fetchWeatherData = async (location: string): Promise<WeatherData> =
   }
 };
 
-/** Get the local season, accounting for northern and southern hemispheres. */
 export const getSeason = (
   date: Date,
   latitude: number = 40,
@@ -98,7 +93,6 @@ export const getSeason = (
   return 'winter';
 };
 
-/** A predictable offline fallback, clearly marked for the UI. */
 export const getFallbackWeatherData = (location: string = 'New York'): WeatherData => {
   const season = getSeason(new Date());
   const temperature = season === 'summer' ? 30 : season === 'winter' ? 10 : 20;
@@ -112,5 +106,4 @@ export const getFallbackWeatherData = (location: string = 'New York'): WeatherDa
   };
 };
 
-// Kept for backwards compatibility with the old utility API.
 export const getMockWeatherData = getFallbackWeatherData;

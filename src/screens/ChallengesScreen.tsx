@@ -1,43 +1,305 @@
-import React, { useState } from 'react';
+import React, { memo, useCallback, useMemo, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  TouchableOpacity,
   TextInput,
   Alert,
   Modal,
-  StatusBar,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { Colors, Typography, Spacing, Radius, Shadows } from '../theme';
-import { useEnergy } from '../context/EnergyContext';
 import { format, addDays } from 'date-fns';
+import { Typography, Spacing, Radius, Shadows } from '../theme';
+import { useEnergy } from '../context/EnergyContext';
+import { useTheme, useThemedStyles, ThemeColors } from '../context/ThemeContext';
+import AccessibleTouchable from '../components/AccessibleTouchable';
+import EmptyState from '../components/EmptyState';
+import FocusAwareStatusBar from '../components/FocusAwareStatusBar';
+import { Challenge } from '../types';
+
+type ChallengeType = Challenge['type'];
+
+const CHALLENGE_TYPES: readonly ChallengeType[] = ['energy', 'cost', 'streak', 'custom'];
+
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
+
+const getChallengeIcon = (challengeType: string) => {
+  switch (challengeType) {
+    case 'energy': return '⚡';
+    case 'cost': return '💰';
+    case 'streak': return '🔥';
+    default: return '🎯';
+  }
+};
+
+const getChallengeUnit = (challengeType: string) => {
+  switch (challengeType) {
+    case 'energy': return 'kWh';
+    case 'cost': return '$';
+    case 'streak': return 'days';
+    default: return 'points';
+  }
+};
+
+// Unit as a screen reader should speak it ("$" is read awkwardly after a number)
+const getSpokenUnit = (challengeType: string) =>
+  challengeType === 'cost' ? 'dollars' : getChallengeUnit(challengeType);
+
+const capitalize = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
+
+interface ChallengeTemplate {
+  key: string;
+  icon: string;
+  name: string;
+  summary: string;
+  type: ChallengeType;
+  title: string;
+  target: string;
+  duration: string;
+}
+
+const TEMPLATES: ChallengeTemplate[] = [
+  {
+    key: 'energy',
+    icon: '⚡',
+    name: 'Energy Saver',
+    summary: 'Save 10 kWh in 7 days',
+    type: 'energy',
+    title: 'Save 10 kWh in a Week',
+    target: '10',
+    duration: '7',
+  },
+  {
+    key: 'cost',
+    icon: '💰',
+    name: 'Bill Reducer',
+    summary: 'Save $10 in 30 days',
+    type: 'cost',
+    title: 'Reduce Bill by $10',
+    target: '10',
+    duration: '30',
+  },
+  {
+    key: 'streak',
+    icon: '🔥',
+    name: 'Streak Master',
+    summary: '14-day streak',
+    type: 'streak',
+    title: '14-Day Eco Streak',
+    target: '14',
+    duration: '14',
+  },
+];
+
+interface ChallengeCardProps {
+  challenge: Challenge;
+  onRemove: (challenge: Challenge) => void;
+}
+
+interface ActiveChallengeCardProps extends ChallengeCardProps {
+  onUpdate: (challenge: Challenge) => void;
+}
+
+const ActiveChallengeCard = memo(function ActiveChallengeCard({
+  challenge,
+  onUpdate,
+  onRemove,
+}: ActiveChallengeCardProps) {
+  const s = useThemedStyles(createStyles);
+  const { colors } = useTheme();
+
+  const unit = getChallengeUnit(challenge.type);
+  const spokenUnit = getSpokenUnit(challenge.type);
+  const progress = challenge.target > 0 ? (challenge.currentProgress / challenge.target) * 100 : 0;
+  const progressClamped = Math.min(Math.max(progress, 0), 100);
+  const daysLeft = Math.ceil((new Date(challenge.endDate).getTime() - Date.now()) / MS_PER_DAY);
+  const isExpired = daysLeft < 0;
+  const timeLabel = isExpired ? 'Expired' : `${daysLeft} ${daysLeft === 1 ? 'day' : 'days'} left`;
+
+  return (
+    <View style={s.challengeCard}>
+      <View
+        style={s.challengeHeader}
+        accessible
+        accessibilityLabel={`${challenge.title}, ${challenge.type} challenge`}
+      >
+        <Text style={s.challengeIcon}>{getChallengeIcon(challenge.type)}</Text>
+        <View style={s.challengeInfo}>
+          <Text style={s.challengeTitle}>{challenge.title}</Text>
+          <Text style={s.challengeType}>{challenge.type.toUpperCase()}</Text>
+        </View>
+      </View>
+
+      {challenge.description ? (
+        <Text style={s.challengeDescription}>{challenge.description}</Text>
+      ) : null}
+
+      <View
+        style={s.targetBox}
+        accessible
+        accessibilityLabel={`Target: ${challenge.target} ${spokenUnit}`}
+      >
+        <Text style={s.targetLabel}>Target:</Text>
+        <Text style={s.targetValue}>
+          {challenge.target} {unit}
+        </Text>
+      </View>
+
+      <View
+        style={s.progressContainer}
+        accessible
+        accessibilityRole="progressbar"
+        accessibilityLabel={`Progress: ${challenge.currentProgress.toFixed(1)} of ${challenge.target} ${spokenUnit}`}
+        accessibilityValue={{ min: 0, max: 100, now: Math.round(progressClamped) }}
+      >
+        <View style={s.progressHeader}>
+          <Text style={s.progressLabel}>Progress</Text>
+          <Text style={s.progressValue}>
+            {challenge.currentProgress.toFixed(1)} / {challenge.target} {unit}
+          </Text>
+        </View>
+        <View style={s.progressBar}>
+          <View style={[s.progressFill, { width: `${progressClamped}%` }]} />
+        </View>
+        <Text style={s.progressPercentage}>{progress.toFixed(0)}%</Text>
+      </View>
+
+      <View style={s.challengeFooter}>
+        <View
+          style={[s.timeLeft, isExpired && s.timeExpired]}
+          accessible
+          accessibilityLabel={timeLabel}
+        >
+          <Text style={[s.timeText, isExpired && s.timeExpiredText]}>⏰ {timeLabel}</Text>
+        </View>
+        {isExpired ? (
+          <AccessibleTouchable
+            label={`Remove ${challenge.title}`}
+            hint="Asks you to confirm before deleting this challenge"
+            onPress={() => onRemove(challenge)}
+          >
+            <View style={s.deleteButton}>
+              <Text style={s.deleteButtonText}>Remove</Text>
+            </View>
+          </AccessibleTouchable>
+        ) : (
+          <AccessibleTouchable
+            label={`Update progress for ${challenge.title}`}
+            hint={`Choose how many ${spokenUnit} to add`}
+            onPress={() => onUpdate(challenge)}
+          >
+            <LinearGradient colors={[colors.primary, colors.primaryDark]} style={s.updateButton}>
+              <Text style={s.updateButtonText}>+ Update</Text>
+            </LinearGradient>
+          </AccessibleTouchable>
+        )}
+      </View>
+
+      {challenge.reward ? (
+        <View style={s.rewardBox} accessible accessibilityLabel={`Reward: ${challenge.reward}`}>
+          <Text style={s.rewardText}>🏆 Reward: {challenge.reward}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+});
+
+const CompletedChallengeCard = memo(function CompletedChallengeCard({
+  challenge,
+  onRemove,
+}: ChallengeCardProps) {
+  const s = useThemedStyles(createStyles);
+  const completedOn = format(new Date(challenge.endDate), 'MMM dd, yyyy');
+
+  return (
+    <View style={[s.challengeCard, s.completedCard]}>
+      {/* Status is announced by the header label below */}
+      <View style={s.completedBadge}>
+        <Text style={s.completedBadgeText} accessible={false} importantForAccessibility="no">
+          COMPLETED
+        </Text>
+      </View>
+      <View
+        style={s.challengeHeader}
+        accessible
+        accessibilityLabel={`${challenge.title}, completed ${completedOn}`}
+      >
+        <Text style={s.challengeIcon}>{getChallengeIcon(challenge.type)}</Text>
+        <View style={s.challengeInfo}>
+          <Text style={s.challengeTitle}>{challenge.title}</Text>
+          <Text style={s.completedDate}>Completed {completedOn}</Text>
+        </View>
+      </View>
+      {challenge.reward ? (
+        <View
+          style={s.rewardEarned}
+          accessible
+          accessibilityLabel={`Reward earned: ${challenge.reward}`}
+        >
+          <Text style={s.rewardEarnedText}>🏆 {challenge.reward}</Text>
+        </View>
+      ) : null}
+      <AccessibleTouchable
+        label={`Remove ${challenge.title}`}
+        hint="Asks you to confirm before deleting this challenge"
+        style={s.deleteCompletedBtn}
+        onPress={() => onRemove(challenge)}
+      >
+        <Text style={s.deleteCompletedBtnText}>Remove</Text>
+      </AccessibleTouchable>
+    </View>
+  );
+});
 
 const ChallengesScreen = () => {
-  const { challenges, addChallenge, updateChallenge, completeChallenge, deleteChallenge } = useEnergy();
+  const { challenges, addChallenge, updateChallenge, completeChallenge, deleteChallenge } = useEnergy(
+    'challenges',
+    'addChallenge',
+    'updateChallenge',
+    'completeChallenge',
+    'deleteChallenge',
+  );
+  const { colors, isDark } = useTheme();
+  const s = useThemedStyles(createStyles);
   const [showModal, setShowModal] = useState(false);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [type, setType] = useState<'energy' | 'cost' | 'streak' | 'custom'>('energy');
+  const [type, setType] = useState<ChallengeType>('energy');
   const [target, setTarget] = useState('');
   const [duration, setDuration] = useState('7');
 
+  const resetForm = useCallback(() => {
+    setTitle('');
+    setDescription('');
+    setType('energy');
+    setTarget('');
+    setDuration('7');
+  }, []);
+
+  const openModal = useCallback(() => setShowModal(true), []);
+
+  const closeModal = useCallback(() => {
+    setShowModal(false);
+    resetForm();
+  }, [resetForm]);
+
   const handleCreateChallenge = async () => {
-    if (!title.trim() || !target) {
+    const targetValue = parseFloat(target);
+    const durationDays = parseInt(duration, 10);
+    // An empty or non-numeric duration would make addDays() return an Invalid Date and toISOString() throw
+    if (!title.trim() || Number.isNaN(targetValue) || Number.isNaN(durationDays)) {
       Alert.alert('Error', 'Please fill in all required fields');
       return;
     }
 
-    const durationDays = parseInt(duration, 10);
     const now = new Date();
 
     await addChallenge({
       title: title.trim(),
       description: description.trim(),
       type,
-      target: parseFloat(target),
+      target: targetValue,
       duration: durationDays,
       startDate: now.toISOString(),
       endDate: addDays(now, durationDays).toISOString(),
@@ -50,362 +312,287 @@ const ChallengesScreen = () => {
     Alert.alert('Success', 'Challenge created! Track your progress below.');
   };
 
-  const resetForm = () => {
-    setTitle('');
-    setDescription('');
-    setType('energy');
-    setTarget('');
-    setDuration('7');
-  };
+  const handleProgressUpdate = useCallback(
+    (challenge: Challenge, amount: number) => {
+      const newProgress = Math.min(challenge.currentProgress + amount, challenge.target);
 
-  const handleProgressUpdate = (challengeId: string, progress: number) => {
-    const challenge = challenges.find(c => c.id === challengeId);
-    if (!challenge) return;
+      updateChallenge(challenge.id, {
+        currentProgress: newProgress,
+      });
 
-    const newProgress = Math.min(challenge.currentProgress + progress, challenge.target);
+      if (newProgress >= challenge.target && !challenge.isCompleted) {
+        completeChallenge(challenge.id);
+        Alert.alert(
+          '🎉 Challenge Completed!',
+          `Congratulations! You've completed "${challenge.title}"!\n\nReward: ${challenge.reward || 'Achievement unlocked!'}`,
+        );
+      }
+    },
+    [updateChallenge, completeChallenge],
+  );
 
-    updateChallenge(challengeId, {
-      currentProgress: newProgress,
-    });
+  const promptProgressUpdate = useCallback(
+    (challenge: Challenge) => {
+      const unit = getChallengeUnit(challenge.type);
+      Alert.alert('Update Progress', `How much progress? (${unit})`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: `+1 ${unit}`, onPress: () => handleProgressUpdate(challenge, 1) },
+        { text: `+5 ${unit}`, onPress: () => handleProgressUpdate(challenge, 5) },
+        { text: `+10 ${unit}`, onPress: () => handleProgressUpdate(challenge, 10) },
+      ]);
+    },
+    [handleProgressUpdate],
+  );
 
-    if (newProgress >= challenge.target && !challenge.isCompleted) {
-      completeChallenge(challengeId);
-      Alert.alert(
-        '🎉 Challenge Completed!',
-        `Congratulations! You've completed "${challenge.title}"!\n\nReward: ${challenge.reward || 'Achievement unlocked!'}`,
-      );
+  const confirmRemove = useCallback(
+    (challenge: Challenge) => {
+      Alert.alert('Remove Challenge', `Delete "${challenge.title}"?`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => deleteChallenge(challenge.id) },
+      ]);
+    },
+    [deleteChallenge],
+  );
+
+  const applyTemplate = useCallback((template: ChallengeTemplate) => {
+    setType(template.type);
+    setTitle(template.title);
+    setTarget(template.target);
+    setDuration(template.duration);
+    setShowModal(true);
+  }, []);
+
+  const { activeChallenges, completedChallenges } = useMemo(() => {
+    const active: Challenge[] = [];
+    const completed: Challenge[] = [];
+    for (const challenge of challenges) {
+      (challenge.isCompleted ? completed : active).push(challenge);
     }
-  };
+    return { activeChallenges: active, completedChallenges: completed };
+  }, [challenges]);
 
-  const getChallengeIcon = (challengeType: string) => {
-    switch (challengeType) {
-      case 'energy': return '⚡';
-      case 'cost': return '💰';
-      case 'streak': return '🔥';
-      default: return '🎯';
-    }
-  };
-
-  const getChallengeUnit = (challengeType: string) => {
-    switch (challengeType) {
-      case 'energy': return 'kWh';
-      case 'cost': return '$';
-      case 'streak': return 'days';
-      default: return 'points';
-    }
-  };
-
-  const activeChallenges = challenges.filter(c => !c.isCompleted);
-  const completedChallenges = challenges.filter(c => c.isCompleted);
+  const ctaGradient = useMemo(() => [colors.primary, colors.primaryDark], [colors]);
+  const keyboardAppearance = isDark ? 'dark' : 'light';
+  const targetUnit = getChallengeUnit(type);
 
   return (
     <View style={s.container}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.dark} />
-      <LinearGradient colors={['#0B1120', '#162032']} style={s.header}>
-        <Text style={s.headerLabel}>CHALLENGES</Text>
-        <Text style={s.headerTitle}>Energy Challenges</Text>
+      <FocusAwareStatusBar variant="hero" />
+      <LinearGradient colors={colors.heroGradient} style={s.header}>
+        {/* Eyebrow repeats the title, so screen readers skip it */}
+        <Text style={s.headerLabel} accessible={false} importantForAccessibility="no">
+          CHALLENGES
+        </Text>
+        <Text style={s.headerTitle} accessibilityRole="header">Energy Challenges</Text>
       </LinearGradient>
 
-      <ScrollView style={s.content}>
+      <ScrollView style={s.content} contentContainerStyle={s.scrollContent}>
         {/* Active Challenges */}
         {activeChallenges.length > 0 && (
           <View style={s.section}>
-            <Text style={s.sectionTitle}>Active Challenges</Text>
-            {activeChallenges.map((challenge) => {
-              const progress = (challenge.currentProgress / challenge.target) * 100;
-              const daysLeft = Math.ceil(
-                (new Date(challenge.endDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
-              );
-              const isExpired = daysLeft < 0;
-
-              return (
-                <View key={challenge.id} style={s.challengeCard}>
-                  <View style={s.challengeHeader}>
-                    <Text style={s.challengeIcon}>{getChallengeIcon(challenge.type)}</Text>
-                    <View style={s.challengeInfo}>
-                      <Text style={s.challengeTitle}>{challenge.title}</Text>
-                      <Text style={s.challengeType}>{challenge.type.toUpperCase()}</Text>
-                    </View>
-                  </View>
-
-                  {challenge.description ? (
-                    <Text style={s.challengeDescription}>{challenge.description}</Text>
-                  ) : null}
-
-                  <View style={s.targetBox}>
-                    <Text style={s.targetLabel}>Target:</Text>
-                    <Text style={s.targetValue}>
-                      {challenge.target} {getChallengeUnit(challenge.type)}
-                    </Text>
-                  </View>
-
-                  <View style={s.progressContainer}>
-                    <View style={s.progressHeader}>
-                      <Text style={s.progressLabel}>Progress</Text>
-                      <Text style={s.progressValue}>
-                        {challenge.currentProgress.toFixed(1)} / {challenge.target} {getChallengeUnit(challenge.type)}
-                      </Text>
-                    </View>
-                    <View style={s.progressBar}>
-                      <View
-                        style={[
-                          s.progressFill,
-                          { width: `${Math.min(progress, 100)}%` },
-                        ]}
-                      />
-                    </View>
-                    <Text style={s.progressPercentage}>{progress.toFixed(0)}%</Text>
-                  </View>
-
-                  <View style={s.challengeFooter}>
-                    <View style={[s.timeLeft, isExpired && s.timeExpired]}>
-                      <Text style={[s.timeText, isExpired && s.timeExpiredText]}>
-                        ⏰ {isExpired ? 'Expired' : `${daysLeft} days left`}
-                      </Text>
-                    </View>
-                    {isExpired ? (
-                      <TouchableOpacity
-                        style={s.deleteButton}
-                        onPress={() =>
-                          Alert.alert('Remove Challenge', `Delete "${challenge.title}"?`, [
-                            { text: 'Cancel', style: 'cancel' },
-                            { text: 'Delete', style: 'destructive', onPress: () => deleteChallenge(challenge.id) },
-                          ])
-                        }
-                      >
-                        <Text style={s.deleteButtonText}>Remove</Text>
-                      </TouchableOpacity>
-                    ) : (
-                      <TouchableOpacity
-                        onPress={() => {
-                          const unit = getChallengeUnit(challenge.type);
-                          Alert.alert(
-                            'Update Progress',
-                            `How much progress? (${unit})`,
-                            [
-                              { text: 'Cancel', style: 'cancel' },
-                              { text: `+1 ${unit}`, onPress: () => handleProgressUpdate(challenge.id, 1) },
-                              { text: `+5 ${unit}`, onPress: () => handleProgressUpdate(challenge.id, 5) },
-                              { text: `+10 ${unit}`, onPress: () => handleProgressUpdate(challenge.id, 10) },
-                            ]
-                          );
-                        }}
-                      >
-                        <LinearGradient
-                          colors={['#00E676', '#00C853']}
-                          style={s.updateButton}
-                        >
-                          <Text style={s.updateButtonText}>+ Update</Text>
-                        </LinearGradient>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-
-                  {challenge.reward && (
-                    <View style={s.rewardBox}>
-                      <Text style={s.rewardText}>🏆 Reward: {challenge.reward}</Text>
-                    </View>
-                  )}
-                </View>
-              );
-            })}
+            <Text style={s.sectionTitle} accessibilityRole="header">Active Challenges</Text>
+            {activeChallenges.map((challenge) => (
+              <ActiveChallengeCard
+                key={challenge.id}
+                challenge={challenge}
+                onUpdate={promptProgressUpdate}
+                onRemove={confirmRemove}
+              />
+            ))}
           </View>
         )}
 
         {/* Completed Challenges */}
         {completedChallenges.length > 0 && (
           <View style={s.section}>
-            <Text style={s.sectionTitle}>Completed</Text>
+            <Text style={s.sectionTitle} accessibilityRole="header">Completed</Text>
             {completedChallenges.map((challenge) => (
-              <View key={challenge.id} style={[s.challengeCard, s.completedCard]}>
-                <View style={s.completedBadge}>
-                  <Text style={s.completedBadgeText}>COMPLETED</Text>
-                </View>
-                <View style={s.challengeHeader}>
-                  <Text style={s.challengeIcon}>{getChallengeIcon(challenge.type)}</Text>
-                  <View style={s.challengeInfo}>
-                    <Text style={s.challengeTitle}>{challenge.title}</Text>
-                    <Text style={s.completedDate}>
-                      Completed {format(new Date(challenge.endDate), 'MMM dd, yyyy')}
-                    </Text>
-                  </View>
-                </View>
-                {challenge.reward && (
-                  <View style={s.rewardEarned}>
-                    <Text style={s.rewardEarnedText}>🏆 {challenge.reward}</Text>
-                  </View>
-                )}
-                <TouchableOpacity
-                  style={s.deleteCompletedBtn}
-                  onPress={() =>
-                    Alert.alert('Remove Challenge', `Delete "${challenge.title}"?`, [
-                      { text: 'Cancel', style: 'cancel' },
-                      { text: 'Delete', style: 'destructive', onPress: () => deleteChallenge(challenge.id) },
-                    ])
-                  }
-                >
-                  <Text style={s.deleteCompletedBtnText}>Remove</Text>
-                </TouchableOpacity>
-              </View>
+              <CompletedChallengeCard
+                key={challenge.id}
+                challenge={challenge}
+                onRemove={confirmRemove}
+              />
             ))}
           </View>
         )}
 
         {/* Empty State */}
         {challenges.length === 0 && (
-          <View style={s.emptyContainer}>
-            <Text style={s.emptyIcon}>🎯</Text>
-            <Text style={s.emptyTitle}>No Challenges Yet</Text>
-            <Text style={s.emptyText}>
-              Create your first challenge and start achieving energy-saving goals!
-            </Text>
-          </View>
+          <EmptyState
+            variant="inline"
+            icon="🎯"
+            title="No Challenges Yet"
+            body="Set an energy, cost or streak target and track your progress here. Start from scratch or pick a quick template below."
+            primaryAction={{
+              label: 'Create a challenge',
+              hint: 'Opens the new challenge form',
+              onPress: openModal,
+            }}
+            style={s.emptyState}
+          />
         )}
 
         {/* Challenge Templates */}
         <View style={s.templatesSection}>
-          <Text style={s.templatesTitle}>Quick Challenge Templates</Text>
+          <Text style={s.templatesTitle} accessibilityRole="header">Quick Challenge Templates</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            <TouchableOpacity
-              style={s.templateCard}
-              onPress={() => {
-                setType('energy');
-                setTitle('Save 10 kWh in a Week');
-                setTarget('10');
-                setDuration('7');
-                setShowModal(true);
-              }}
-            >
-              <Text style={s.templateIcon}>⚡</Text>
-              <Text style={s.templateTitle}>Energy Saver</Text>
-              <Text style={s.templateDesc}>Save 10 kWh in 7 days</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={s.templateCard}
-              onPress={() => {
-                setType('cost');
-                setTitle('Reduce Bill by $10');
-                setTarget('10');
-                setDuration('30');
-                setShowModal(true);
-              }}
-            >
-              <Text style={s.templateIcon}>💰</Text>
-              <Text style={s.templateTitle}>Bill Reducer</Text>
-              <Text style={s.templateDesc}>Save $10 in 30 days</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={s.templateCard}
-              onPress={() => {
-                setType('streak');
-                setTitle('14-Day Eco Streak');
-                setTarget('14');
-                setDuration('14');
-                setShowModal(true);
-              }}
-            >
-              <Text style={s.templateIcon}>🔥</Text>
-              <Text style={s.templateTitle}>Streak Master</Text>
-              <Text style={s.templateDesc}>14-day streak</Text>
-            </TouchableOpacity>
+            {TEMPLATES.map((template) => (
+              <AccessibleTouchable
+                key={template.key}
+                label={`${template.name} template: ${template.summary}`}
+                hint="Opens the new challenge form pre-filled with this template"
+                style={s.templateCard}
+                onPress={() => applyTemplate(template)}
+              >
+                <Text style={s.templateIcon} accessible={false} importantForAccessibility="no">
+                  {template.icon}
+                </Text>
+                <Text style={s.templateTitle}>{template.name}</Text>
+                <Text style={s.templateDesc}>{template.summary}</Text>
+              </AccessibleTouchable>
+            ))}
           </ScrollView>
         </View>
       </ScrollView>
 
-      <TouchableOpacity onPress={() => setShowModal(true)}>
-        <LinearGradient colors={['#00E676', '#00C853']} style={s.fab}>
+      <AccessibleTouchable
+        label="New challenge"
+        hint="Opens the form to create a challenge"
+        style={s.fab}
+        onPress={openModal}
+      >
+        <LinearGradient colors={ctaGradient} style={s.fabGradient}>
           <Text style={s.fabText}>+ New Challenge</Text>
         </LinearGradient>
-      </TouchableOpacity>
+      </AccessibleTouchable>
 
       {/* Create Challenge Modal */}
-      <Modal visible={showModal} animationType="slide" transparent={true}>
+      <Modal
+        visible={showModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={closeModal}
+      >
         <View style={s.modalOverlay}>
-          <View style={s.modalContent}>
+          <View
+            style={s.modalContent}
+            accessibilityViewIsModal
+            onAccessibilityEscape={closeModal}
+          >
             <View style={s.modalHeader}>
-              <Text style={s.modalTitle}>Create Challenge</Text>
-              <TouchableOpacity onPress={() => { setShowModal(false); resetForm(); }}>
+              <Text style={s.modalTitle} accessibilityRole="header">Create Challenge</Text>
+              <AccessibleTouchable
+                label="Close"
+                hint="Discards this challenge and closes the form"
+                style={s.modalCloseButton}
+                onPress={closeModal}
+              >
                 <Text style={s.modalClose}>✕</Text>
-              </TouchableOpacity>
+              </AccessibleTouchable>
             </View>
 
-            <ScrollView style={s.modalBody}>
-              <Text style={s.label}>Challenge Title*</Text>
+            <ScrollView style={s.modalBody} keyboardShouldPersistTaps="handled">
+              {/* Visible field labels are folded into each input's accessibilityLabel */}
+              <Text style={s.label} accessible={false} importantForAccessibility="no">
+                Challenge Title*
+              </Text>
               <TextInput
                 style={s.input}
                 value={title}
                 onChangeText={setTitle}
                 placeholder="e.g., Save 20 kWh this week"
-                placeholderTextColor={Colors.textMuted}
+                placeholderTextColor={colors.textMuted}
+                keyboardAppearance={keyboardAppearance}
+                accessibilityLabel="Challenge title, required"
               />
 
-              <Text style={s.label}>Description</Text>
+              <Text style={s.label} accessible={false} importantForAccessibility="no">
+                Description
+              </Text>
               <TextInput
                 style={[s.input, s.textArea]}
                 value={description}
                 onChangeText={setDescription}
                 placeholder="Add details about this challenge..."
-                placeholderTextColor={Colors.textMuted}
+                placeholderTextColor={colors.textMuted}
+                keyboardAppearance={keyboardAppearance}
+                accessibilityLabel="Description"
                 multiline
                 numberOfLines={2}
               />
 
-              <Text style={s.label}>Challenge Type*</Text>
-              <View style={s.typeSelector}>
-                {(['energy', 'cost', 'streak', 'custom'] as const).map((t) => (
-                  <TouchableOpacity
-                    key={t}
-                    style={[s.typeButton, type === t && s.typeButtonActive]}
-                    onPress={() => setType(t)}
-                  >
-                    <Text style={[s.typeButtonText, type === t && s.typeButtonTextActive]}>
-                      {t.charAt(0).toUpperCase() + t.slice(1)}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+              <Text style={s.label} accessibilityLabel="Challenge type, required">
+                Challenge Type*
+              </Text>
+              <View style={s.typeSelector} accessibilityRole="radiogroup">
+                {CHALLENGE_TYPES.map((t) => {
+                  const selected = type === t;
+                  return (
+                    <AccessibleTouchable
+                      key={t}
+                      role="radio"
+                      label={`${capitalize(t)} challenge`}
+                      hint={`Measures the target in ${getSpokenUnit(t)}`}
+                      accessibilityState={{ checked: selected }}
+                      style={[s.typeButton, selected && s.typeButtonActive]}
+                      onPress={() => setType(t)}
+                    >
+                      <Text style={[s.typeButtonText, selected && s.typeButtonTextActive]}>
+                        {capitalize(t)}
+                      </Text>
+                    </AccessibleTouchable>
+                  );
+                })}
               </View>
 
-              <Text style={s.label}>Target ({getChallengeUnit(type)})*</Text>
+              <Text style={s.label} accessible={false} importantForAccessibility="no">
+                Target ({targetUnit})*
+              </Text>
               <TextInput
                 style={s.input}
                 value={target}
                 onChangeText={setTarget}
                 placeholder="e.g., 20"
                 keyboardType="decimal-pad"
-                placeholderTextColor={Colors.textMuted}
+                placeholderTextColor={colors.textMuted}
+                keyboardAppearance={keyboardAppearance}
+                accessibilityLabel={`Target in ${getSpokenUnit(type)}, required`}
               />
 
-              <Text style={s.label}>Duration (days)*</Text>
+              <Text style={s.label} accessible={false} importantForAccessibility="no">
+                Duration (days)*
+              </Text>
               <TextInput
                 style={s.input}
                 value={duration}
                 onChangeText={setDuration}
                 placeholder="7"
                 keyboardType="number-pad"
-                placeholderTextColor={Colors.textMuted}
+                placeholderTextColor={colors.textMuted}
+                keyboardAppearance={keyboardAppearance}
+                accessibilityLabel="Duration in days, required"
               />
             </ScrollView>
 
             <View style={s.modalFooter}>
-              <TouchableOpacity
+              <AccessibleTouchable
+                label="Cancel"
+                hint="Discards this challenge and closes the form"
                 style={[s.modalButton, s.cancelButton]}
-                onPress={() => { setShowModal(false); resetForm(); }}
+                onPress={closeModal}
               >
                 <Text style={s.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
+              </AccessibleTouchable>
+              <AccessibleTouchable
+                label="Create challenge"
+                hint="Saves the challenge and starts tracking it"
                 style={s.modalButton}
                 onPress={handleCreateChallenge}
               >
-                <LinearGradient
-                  colors={['#00E676', '#00C853']}
-                  style={s.createButton}
-                >
+                <LinearGradient colors={ctaGradient} style={s.createButton}>
                   <Text style={s.createButtonText}>Create</Text>
                 </LinearGradient>
-              </TouchableOpacity>
+              </AccessibleTouchable>
             </View>
           </View>
         </View>
@@ -414,392 +601,389 @@ const ChallengesScreen = () => {
   );
 };
 
-const s = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  header: {
-    paddingTop: 54,
-    paddingBottom: 28,
-    paddingHorizontal: Spacing.page,
-    alignItems: 'center',
-  },
-  headerLabel: {
-    ...Typography.overline,
-    color: Colors.primary,
-    marginBottom: 4,
-  },
-  headerTitle: {
-    ...Typography.displaySmall,
-    color: '#fff',
-  },
-  content: {
-    flex: 1,
-  },
-  section: {
-    padding: Spacing.page,
-  },
-  sectionTitle: {
-    ...Typography.h2,
-    color: Colors.text,
-    marginBottom: Spacing.lg,
-  },
-  challengeCard: {
-    backgroundColor: Colors.card,
-    borderRadius: Radius.card,
-    padding: Spacing.page,
-    marginBottom: Spacing.lg,
-    ...Shadows.md,
-  },
-  completedCard: {
-    backgroundColor: Colors.primarySoft,
-    borderLeftWidth: 4,
-    borderLeftColor: Colors.success,
-  },
-  completedBadge: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-    backgroundColor: Colors.success,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: Radius.md,
-  },
-  completedBadgeText: {
-    ...Typography.overline,
-    color: '#fff',
-  },
-  challengeHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: Spacing.md,
-  },
-  challengeIcon: {
-    fontSize: 40,
-    marginRight: Spacing.lg,
-  },
-  challengeInfo: {
-    flex: 1,
-  },
-  challengeTitle: {
-    ...Typography.h3,
-    color: Colors.text,
-    marginBottom: Spacing.xs,
-  },
-  challengeType: {
-    ...Typography.overline,
-    color: Colors.primary,
-  },
-  completedDate: {
-    ...Typography.bodySmall,
-    color: Colors.success,
-    fontWeight: '500',
-  },
-  challengeDescription: {
-    ...Typography.bodyMedium,
-    color: Colors.textSecondary,
-    marginBottom: Spacing.md,
-  },
-  targetBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.primarySoft,
-    padding: Spacing.md,
-    borderRadius: Radius.sm,
-    marginBottom: Spacing.lg,
-  },
-  targetLabel: {
-    ...Typography.label,
-    color: Colors.primaryDark,
-    marginRight: Spacing.sm,
-  },
-  targetValue: {
-    ...Typography.statSmall,
-    color: Colors.primaryDark,
-  },
-  progressContainer: {
-    marginBottom: Spacing.lg,
-  },
-  progressHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: Spacing.sm,
-  },
-  progressLabel: {
-    ...Typography.bodySmall,
-    color: Colors.textSecondary,
-  },
-  progressValue: {
-    ...Typography.bodySmall,
-    fontWeight: '600',
-    color: Colors.text,
-  },
-  progressBar: {
-    height: 10,
-    backgroundColor: Colors.border,
-    borderRadius: 5,
-    overflow: 'hidden',
-    marginBottom: Spacing.xs,
-  },
-  progressFill: {
-    height: '100%',
-    backgroundColor: Colors.primary,
-    borderRadius: 5,
-  },
-  progressPercentage: {
-    ...Typography.label,
-    color: Colors.primary,
-    textAlign: 'right',
-  },
-  challengeFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: Spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: Colors.divider,
-  },
-  timeLeft: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs + 2,
-    backgroundColor: Colors.accentLight,
-    borderRadius: Radius.md,
-  },
-  timeExpired: {
-    backgroundColor: '#FEF2F2',
-  },
-  timeText: {
-    ...Typography.bodySmall,
-    color: Colors.info,
-    fontWeight: '500',
-  },
-  timeExpiredText: {
-    color: Colors.danger,
-  },
-  updateButton: {
-    paddingHorizontal: Spacing.page,
-    paddingVertical: Spacing.sm,
-    borderRadius: Radius.pill,
-  },
-  updateButtonText: {
-    ...Typography.label,
-    color: '#fff',
-  },
-  deleteButton: {
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
-    borderRadius: Radius.pill,
-  },
-  deleteButtonText: {
-    ...Typography.label,
-    color: Colors.danger,
-  },
-  deleteCompletedBtn: {
-    marginTop: Spacing.md,
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    borderRadius: Radius.sm,
-    padding: Spacing.sm,
-    alignItems: 'center',
-  },
-  deleteCompletedBtnText: {
-    ...Typography.label,
-    color: Colors.danger,
-  },
-  rewardBox: {
-    marginTop: Spacing.md,
-    padding: Spacing.md,
-    backgroundColor: Colors.primarySoft,
-    borderRadius: Radius.sm,
-    borderLeftWidth: 3,
-    borderLeftColor: Colors.primary,
-  },
-  rewardText: {
-    ...Typography.bodySmall,
-    color: Colors.primaryDeep,
-    fontWeight: '500',
-  },
-  rewardEarned: {
-    marginTop: Spacing.md,
-    padding: Spacing.md,
-    backgroundColor: Colors.card,
-    borderRadius: Radius.sm,
-  },
-  rewardEarnedText: {
-    ...Typography.label,
-    color: Colors.success,
-    textAlign: 'center',
-  },
-  emptyContainer: {
-    alignItems: 'center',
-    padding: 40,
-    marginTop: 60,
-  },
-  emptyIcon: {
-    fontSize: 80,
-    marginBottom: Spacing.page,
-  },
-  emptyTitle: {
-    ...Typography.h1,
-    color: Colors.text,
-    marginBottom: Spacing.md,
-  },
-  emptyText: {
-    ...Typography.bodyMedium,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-  },
-  templatesSection: {
-    padding: Spacing.page,
-    paddingTop: 0,
-  },
-  templatesTitle: {
-    ...Typography.h3,
-    color: Colors.text,
-    marginBottom: Spacing.lg,
-  },
-  templateCard: {
-    backgroundColor: Colors.card,
-    borderRadius: Radius.card,
-    padding: Spacing.lg,
-    marginRight: Spacing.md,
-    width: 140,
-    ...Shadows.sm,
-  },
-  templateIcon: {
-    fontSize: 32,
-    marginBottom: Spacing.sm,
-  },
-  templateTitle: {
-    ...Typography.label,
-    color: Colors.text,
-    marginBottom: Spacing.xs,
-  },
-  templateDesc: {
-    ...Typography.labelSmall,
-    color: Colors.textSecondary,
-    fontWeight: '400',
-  },
-  fab: {
-    position: 'absolute',
-    bottom: 20,
-    right: 20,
-    paddingHorizontal: 25,
-    paddingVertical: 15,
-    borderRadius: Radius.pill,
-    ...Shadows.lg,
-  },
-  fabText: {
-    ...Typography.h3,
-    color: '#fff',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: Colors.card,
-    borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl,
-    maxHeight: '80%',
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: Spacing.page,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  modalTitle: {
-    ...Typography.h2,
-    color: Colors.text,
-  },
-  modalClose: {
-    fontSize: 24,
-    color: Colors.textMuted,
-  },
-  modalBody: {
-    padding: Spacing.page,
-  },
-  label: {
-    ...Typography.label,
-    color: Colors.text,
-    marginBottom: Spacing.sm,
-    marginTop: Spacing.md,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: Radius.sm,
-    padding: Spacing.md,
-    ...Typography.bodyMedium,
-    color: Colors.text,
-    backgroundColor: Colors.background,
-  },
-  textArea: {
-    height: 60,
-    textAlignVertical: 'top',
-  },
-  typeSelector: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-    marginBottom: Spacing.sm,
-  },
-  typeButton: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: Radius.sm,
-    backgroundColor: Colors.background,
-    alignItems: 'center',
-  },
-  typeButtonActive: {
-    backgroundColor: Colors.primary,
-  },
-  typeButtonText: {
-    ...Typography.label,
-    color: Colors.textSecondary,
-  },
-  typeButtonTextActive: {
-    color: '#fff',
-    fontWeight: '600',
-  },
-  modalFooter: {
-    flexDirection: 'row',
-    padding: Spacing.page,
-    gap: Spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  modalButton: {
-    flex: 1,
-    borderRadius: Radius.sm,
-    overflow: 'hidden',
-  },
-  cancelButton: {
-    backgroundColor: Colors.background,
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
-  cancelButtonText: {
-    ...Typography.h3,
-    color: Colors.textSecondary,
-  },
-  createButton: {
-    paddingVertical: 14,
-    alignItems: 'center',
-    borderRadius: Radius.sm,
-  },
-  createButtonText: {
-    ...Typography.h3,
-    color: '#fff',
-  },
-});
+const createStyles = (c: ThemeColors) => {
+  // Bright green reads well on dark surfaces; light surfaces need the deeper shade for legible text
+
+  return StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: c.background,
+    },
+    header: {
+      paddingTop: 54,
+      paddingBottom: 28,
+      paddingHorizontal: Spacing.page,
+      alignItems: 'center',
+    },
+    headerLabel: {
+      ...Typography.overline,
+      color: c.primary,
+      marginBottom: 4,
+    },
+    headerTitle: {
+      ...Typography.displaySmall,
+      color: c.textOnDark,
+    },
+    content: {
+      flex: 1,
+    },
+    // Keeps the last row clear of the floating "New Challenge" button
+    scrollContent: {
+      paddingBottom: 96,
+    },
+    section: {
+      padding: Spacing.page,
+    },
+    sectionTitle: {
+      ...Typography.h2,
+      color: c.text,
+      marginBottom: Spacing.lg,
+    },
+    challengeCard: {
+      backgroundColor: c.card,
+      borderRadius: Radius.card,
+      padding: Spacing.page,
+      marginBottom: Spacing.lg,
+      ...Shadows.md,
+    },
+    completedCard: {
+      backgroundColor: c.primarySoft,
+      borderLeftWidth: 4,
+      borderLeftColor: c.success,
+    },
+    completedBadge: {
+      position: 'absolute',
+      top: 10,
+      right: 10,
+      backgroundColor: c.success,
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderRadius: Radius.md,
+    },
+    completedBadgeText: {
+      ...Typography.overline,
+      color: c.onPrimary,
+    },
+    challengeHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginBottom: Spacing.md,
+    },
+    challengeIcon: {
+      fontSize: 40,
+      marginRight: Spacing.lg,
+    },
+    challengeInfo: {
+      flex: 1,
+    },
+    challengeTitle: {
+      ...Typography.h3,
+      color: c.text,
+      marginBottom: Spacing.xs,
+    },
+    challengeType: {
+      ...Typography.overline,
+      color: c.primaryText,
+    },
+    completedDate: {
+      ...Typography.bodySmall,
+      color: c.primaryText,
+      fontWeight: '500',
+    },
+    challengeDescription: {
+      ...Typography.bodyMedium,
+      color: c.textSecondary,
+      marginBottom: Spacing.md,
+    },
+    targetBox: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: c.primarySoft,
+      padding: Spacing.md,
+      borderRadius: Radius.sm,
+      marginBottom: Spacing.lg,
+    },
+    targetLabel: {
+      ...Typography.label,
+      color: c.primaryText,
+      marginRight: Spacing.sm,
+    },
+    targetValue: {
+      ...Typography.statSmall,
+      color: c.primaryText,
+    },
+    progressContainer: {
+      marginBottom: Spacing.lg,
+    },
+    progressHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      marginBottom: Spacing.sm,
+    },
+    progressLabel: {
+      ...Typography.bodySmall,
+      color: c.textSecondary,
+    },
+    progressValue: {
+      ...Typography.bodySmall,
+      fontWeight: '600',
+      color: c.text,
+    },
+    progressBar: {
+      height: 10,
+      backgroundColor: c.border,
+      borderRadius: 5,
+      overflow: 'hidden',
+      marginBottom: Spacing.xs,
+    },
+    progressFill: {
+      height: '100%',
+      backgroundColor: c.primary,
+      borderRadius: 5,
+    },
+    progressPercentage: {
+      ...Typography.label,
+      color: c.primaryText,
+      textAlign: 'right',
+    },
+    challengeFooter: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingTop: Spacing.md,
+      borderTopWidth: 1,
+      borderTopColor: c.divider,
+    },
+    timeLeft: {
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.xs + 2,
+      backgroundColor: c.accentLight,
+      borderRadius: Radius.md,
+    },
+    timeExpired: {
+      backgroundColor: c.dangerSoft,
+    },
+    timeText: {
+      ...Typography.bodySmall,
+      color: c.info,
+      fontWeight: '500',
+    },
+    timeExpiredText: {
+      color: c.dangerText,
+    },
+    updateButton: {
+      paddingHorizontal: Spacing.page,
+      paddingVertical: Spacing.sm,
+      borderRadius: Radius.pill,
+    },
+    updateButtonText: {
+      ...Typography.label,
+      color: c.onPrimary,
+    },
+    deleteButton: {
+      backgroundColor: c.dangerSoft,
+      borderWidth: 1,
+      borderColor: c.dangerBorder,
+      paddingHorizontal: Spacing.lg,
+      paddingVertical: Spacing.sm,
+      borderRadius: Radius.pill,
+    },
+    deleteButtonText: {
+      ...Typography.label,
+      color: c.dangerText,
+    },
+    deleteCompletedBtn: {
+      marginTop: Spacing.md,
+      backgroundColor: c.dangerSoft,
+      borderWidth: 1,
+      borderColor: c.dangerBorder,
+      borderRadius: Radius.sm,
+      padding: Spacing.sm,
+      alignItems: 'center',
+    },
+    deleteCompletedBtnText: {
+      ...Typography.label,
+      color: c.dangerText,
+    },
+    rewardBox: {
+      marginTop: Spacing.md,
+      padding: Spacing.md,
+      backgroundColor: c.primarySoft,
+      borderRadius: Radius.sm,
+      borderLeftWidth: 3,
+      borderLeftColor: c.primary,
+    },
+    rewardText: {
+      ...Typography.bodySmall,
+      color: c.primaryText,
+      fontWeight: '500',
+    },
+    rewardEarned: {
+      marginTop: Spacing.md,
+      padding: Spacing.md,
+      backgroundColor: c.card,
+      borderRadius: Radius.sm,
+    },
+    rewardEarnedText: {
+      ...Typography.label,
+      color: c.primaryText,
+      textAlign: 'center',
+    },
+    emptyState: {
+      marginTop: Spacing.xl,
+    },
+    templatesSection: {
+      padding: Spacing.page,
+      paddingTop: 0,
+    },
+    templatesTitle: {
+      ...Typography.h3,
+      color: c.text,
+      marginBottom: Spacing.lg,
+    },
+    templateCard: {
+      backgroundColor: c.card,
+      borderRadius: Radius.card,
+      padding: Spacing.lg,
+      marginRight: Spacing.md,
+      width: 140,
+      ...Shadows.sm,
+    },
+    templateIcon: {
+      fontSize: 32,
+      marginBottom: Spacing.sm,
+    },
+    templateTitle: {
+      ...Typography.label,
+      color: c.text,
+      marginBottom: Spacing.xs,
+    },
+    templateDesc: {
+      ...Typography.labelSmall,
+      color: c.textSecondary,
+      fontWeight: '400',
+    },
+    fab: {
+      position: 'absolute',
+      bottom: 20,
+      right: 20,
+    },
+    fabGradient: {
+      paddingHorizontal: 25,
+      paddingVertical: 15,
+      borderRadius: Radius.pill,
+      ...Shadows.lg,
+    },
+    fabText: {
+      ...Typography.h3,
+      color: c.onPrimary,
+    },
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: c.overlay,
+      justifyContent: 'flex-end',
+    },
+    modalContent: {
+      backgroundColor: c.card,
+      borderTopLeftRadius: Radius.xl,
+      borderTopRightRadius: Radius.xl,
+      maxHeight: '80%',
+    },
+    modalHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      padding: Spacing.page,
+      borderBottomWidth: 1,
+      borderBottomColor: c.border,
+    },
+    modalTitle: {
+      ...Typography.h2,
+      color: c.text,
+    },
+    modalCloseButton: {
+      alignItems: 'center',
+    },
+    modalClose: {
+      fontSize: 24,
+      color: c.textSecondary,
+    },
+    modalBody: {
+      padding: Spacing.page,
+    },
+    label: {
+      ...Typography.label,
+      color: c.text,
+      marginBottom: Spacing.sm,
+      marginTop: Spacing.md,
+    },
+    input: {
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: Radius.sm,
+      padding: Spacing.md,
+      ...Typography.bodyMedium,
+      color: c.text,
+      backgroundColor: c.inputBg,
+    },
+    textArea: {
+      height: 60,
+      textAlignVertical: 'top',
+    },
+    typeSelector: {
+      flexDirection: 'row',
+      gap: Spacing.sm,
+      marginBottom: Spacing.sm,
+    },
+    typeButton: {
+      flex: 1,
+      paddingVertical: 10,
+      borderRadius: Radius.sm,
+      backgroundColor: c.inputBg,
+      alignItems: 'center',
+    },
+    typeButtonActive: {
+      backgroundColor: c.primary,
+    },
+    typeButtonText: {
+      ...Typography.label,
+      color: c.textSecondary,
+    },
+    typeButtonTextActive: {
+      color: c.onPrimary,
+      fontWeight: '600',
+    },
+    modalFooter: {
+      flexDirection: 'row',
+      padding: Spacing.page,
+      gap: Spacing.md,
+      borderTopWidth: 1,
+      borderTopColor: c.border,
+    },
+    modalButton: {
+      flex: 1,
+      borderRadius: Radius.sm,
+      overflow: 'hidden',
+    },
+    cancelButton: {
+      backgroundColor: c.inputBg,
+      paddingVertical: 14,
+      alignItems: 'center',
+    },
+    cancelButtonText: {
+      ...Typography.h3,
+      color: c.textSecondary,
+    },
+    createButton: {
+      paddingVertical: 14,
+      alignItems: 'center',
+      borderRadius: Radius.sm,
+    },
+    createButtonText: {
+      ...Typography.h3,
+      color: c.onPrimary,
+    },
+  });
+};
 
 export default ChallengesScreen;

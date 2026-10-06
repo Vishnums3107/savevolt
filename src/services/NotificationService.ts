@@ -1,11 +1,17 @@
 /**
- * Real-time Push Notification Service
- * Handles local and remote push notifications with Firebase Cloud Messaging
+ * Push Notification Service
+ * Handles local notifications (alerts, achievements, scheduled reminders) and, when Firebase is
+ * configured for the build, remote push via Firebase Cloud Messaging.
+ *
+ * Every entry point is safe to call when native push is unavailable: failures are logged and
+ * never thrown into UI code.
  */
 
 import messaging from '@react-native-firebase/messaging';
 import PushNotification, { Importance } from 'react-native-push-notification';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
+import { hashString } from '../utils/hash';
 
 export interface NotificationPreferences {
   enabled: boolean;
@@ -20,18 +26,57 @@ export interface NotificationPreferences {
   quietHoursEnd?: string; // "08:00"
 }
 
+export type NotificationType =
+  | 'energy'
+  | 'goal'
+  | 'achievement'
+  | 'community'
+  | 'challenge'
+  | 'tip'
+  | 'alert'
+  | 'reminder';
+
 export interface CustomNotification {
   id: string;
   title: string;
   message: string;
-  type: 'energy' | 'goal' | 'achievement' | 'community' | 'challenge' | 'tip' | 'alert';
+  type: NotificationType;
   priority: 'high' | 'normal' | 'low';
   data?: any;
   scheduledTime?: Date;
 }
 
+export interface ScheduleOptions {
+  /** Repeat the notification at the same time every day or week. */
+  repeatType?: 'day' | 'week';
+}
+
+/** Native helper registered by the Android app (android/app/.../ExactAlarmModule.kt). */
+interface ExactAlarmNativeModule {
+  canScheduleExactAlarms(): Promise<boolean>;
+  openExactAlarmSettings(): Promise<boolean>;
+}
+
+const PREFERENCES_KEY = 'notification_preferences';
+const FCM_TOKEN_KEY = 'fcm_token';
+const MAX_NATIVE_ID = 2147483647; // Android parses notification ids as a signed 32-bit int
+
+/**
+ * Converts any id to the numeric string Android requires. Numeric ids pass through; other
+ * strings hash to a stable positive integer so the same id always maps to the same notification.
+ */
+export const toNativeNotificationId = (id: string): string => {
+  if (/^\d+$/.test(id) && Number(id) > 0 && Number(id) <= MAX_NATIVE_ID) {
+    return id;
+  }
+  return String((hashString(id) % (MAX_NATIVE_ID - 1)) + 1);
+};
+
 class NotificationService {
   private static instance: NotificationService;
+  private initPromise: Promise<void> | null = null;
+  private remoteMessagingReady = false;
+  private enabled = true;
   private fcmToken: string | null = null;
   private preferences: NotificationPreferences = {
     enabled: true,
@@ -45,7 +90,6 @@ class NotificationService {
     quietHoursStart: '22:00',
     quietHoursEnd: '08:00',
   };
-  private firebaseAvailable: boolean = true;
 
   private constructor() {}
 
@@ -57,53 +101,130 @@ class NotificationService {
   }
 
   /**
-   * Initialize notification service
+   * Configure local notifications and load stored preferences. Safe to call repeatedly; the work
+   * runs once and later calls wait for the same result.
    */
-  public async initialize(): Promise<void> {
-    try {
-      // Configure local notifications
-      this.configurePushNotifications();
-
-      try {
-        // Request permissions
-        const authStatus = await messaging().requestPermission();
-        const enabled =
-          authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
-          authStatus === messaging.AuthorizationStatus.PROVISIONAL;
-
-        if (enabled) {
-          // Get FCM token
-          this.fcmToken = await messaging().getToken();
-          console.log('FCM Token:', this.fcmToken);
-
-          // Save token to cloud for later use
-          await this.saveFCMToken(this.fcmToken);
-
-          // Listen for token refresh
-          messaging().onTokenRefresh(async (token) => {
-            this.fcmToken = token;
-            await this.saveFCMToken(token);
-          });
-
-          // Handle foreground notifications
-          messaging().onMessage(async (remoteMessage) => {
-            await this.handleRemoteNotification(remoteMessage);
-          });
-
-          // Handle background notifications
-          messaging().setBackgroundMessageHandler(async (remoteMessage) => {
-            await this.handleRemoteNotification(remoteMessage);
-          });
+  public initialize(): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = (async () => {
+        try {
+          this.configurePushNotifications();
+        } catch (error) {
+          console.warn('Local notifications are unavailable on this build.', error);
         }
-      } catch (error) {
-        console.warn('Firebase messaging not configured, remote push notifications disabled.', error);
-        this.firebaseAvailable = false;
+        await this.loadPreferences();
+      })();
+    }
+    return this.initPromise;
+  }
+
+  /**
+   * Mirrors the in-app "Notifications" setting. When disabled, no alert is shown; scheduled
+   * reminders are cancelled by the reminder scheduler.
+   */
+  public setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
+  }
+
+  public isEnabled(): boolean {
+    return this.enabled && this.preferences.enabled;
+  }
+
+  /**
+   * Ask the OS for permission to show notifications (Android 13+ and iOS). Returns whether
+   * notifications can be shown. Never throws.
+   */
+  public async ensurePermission(): Promise<boolean> {
+    try {
+      let granted = true;
+      if (Platform.OS === 'android') {
+        if (Number(Platform.Version) >= 33) {
+          const permission = PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS;
+          granted = await PermissionsAndroid.check(permission);
+          if (!granted) {
+            const result = await PermissionsAndroid.request(permission);
+            granted = result === PermissionsAndroid.RESULTS.GRANTED;
+          }
+        }
+      } else {
+        await PushNotification.requestPermissions();
       }
 
-      // Load preferences
-      await this.loadPreferences();
+      if (granted) {
+        await this.setupRemoteMessaging();
+      }
+      return granted;
     } catch (error) {
-      console.error('Failed to initialize notifications:', error);
+      console.warn('Notification permission request failed.', error);
+      return false;
+    }
+  }
+
+  /**
+   * Whether time-based reminders can be scheduled. Android 12+ requires the exact-alarm
+   * permission; scheduling without it throws inside the native push library.
+   */
+  public async canScheduleExactAlarms(): Promise<boolean> {
+    if (Platform.OS !== 'android' || Number(Platform.Version) < 31) {
+      return true;
+    }
+    const alarmModule: ExactAlarmNativeModule | undefined = NativeModules.SaveVoltAlarms;
+    if (!alarmModule) {
+      return false;
+    }
+    try {
+      return await alarmModule.canScheduleExactAlarms();
+    } catch {
+      return false;
+    }
+  }
+
+  /** Opens the Android "Alarms & reminders" settings page for SaveVolt. Returns false elsewhere. */
+  public async openExactAlarmSettings(): Promise<boolean> {
+    const alarmModule: ExactAlarmNativeModule | undefined = NativeModules.SaveVoltAlarms;
+    if (Platform.OS !== 'android' || !alarmModule) {
+      return false;
+    }
+    try {
+      return await alarmModule.openExactAlarmSettings();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Remote push via Firebase. Only works when the build includes a Firebase configuration;
+   * otherwise it is skipped quietly and local notifications keep working.
+   */
+  private async setupRemoteMessaging(): Promise<void> {
+    if (this.remoteMessagingReady) {
+      return;
+    }
+    this.remoteMessagingReady = true;
+    try {
+      const authStatus = await messaging().requestPermission();
+      const authorized =
+        authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
+        authStatus === messaging.AuthorizationStatus.PROVISIONAL;
+      if (!authorized) {
+        return;
+      }
+
+      this.fcmToken = await messaging().getToken();
+      await this.saveFCMToken(this.fcmToken);
+
+      messaging().onTokenRefresh(async (token) => {
+        this.fcmToken = token;
+        await this.saveFCMToken(token);
+      });
+      messaging().onMessage(async (remoteMessage) => {
+        await this.handleRemoteNotification(remoteMessage);
+      });
+      messaging().setBackgroundMessageHandler(async (remoteMessage) => {
+        await this.handleRemoteNotification(remoteMessage);
+      });
+    } catch (error) {
+      console.warn('Firebase messaging is not configured; remote push is disabled.', error);
     }
   }
 
@@ -112,26 +233,19 @@ class NotificationService {
    */
   private configurePushNotifications(): void {
     PushNotification.configure({
-      onRegister: (token: any) => {
-        console.log('Local notification token:', token);
-      },
-
       onNotification: (notification: any) => {
-        console.log('Local notification received:', notification);
-        notification.finish(PushNotification.FetchResult.NoData);
+        notification.finish?.(PushNotification.FetchResult.NoData);
       },
-
       permissions: {
         alert: true,
         badge: true,
         sound: true,
       },
-
       popInitialNotification: true,
-      requestPermissions: true,
+      // Permission is requested from ensurePermission() once the user has notifications enabled
+      requestPermissions: false,
     });
 
-    // Create notification channels for Android
     this.createNotificationChannels();
   }
 
@@ -144,6 +258,12 @@ class NotificationService {
         channelId: 'energy-alerts',
         channelName: 'Energy Alerts',
         channelDescription: 'High energy consumption alerts',
+        importance: Importance.HIGH,
+      },
+      {
+        channelId: 'reminders',
+        channelName: 'Reminders',
+        channelDescription: 'Your scheduled energy-saving reminders',
         importance: Importance.HIGH,
       },
       {
@@ -181,64 +301,71 @@ class NotificationService {
           importance: channel.importance,
           vibrate: true,
         },
-        (created: boolean) => console.log(`Channel ${channel.channelId} created:`, created)
+        () => {},
       );
     });
   }
 
   /**
-   * Send local notification
+   * Show a notification now. Skipped when notifications are off, during quiet hours, or when
+   * the user has muted this type.
    */
   public async sendLocalNotification(notification: CustomNotification): Promise<void> {
-    if (!this.preferences.enabled || this.isQuietHours()) {
+    if (!this.isEnabled() || this.isQuietHours() || !this.isNotificationTypeEnabled(notification.type)) {
       return;
     }
 
-    // Check if this type of notification is enabled
-    if (!this.isNotificationTypeEnabled(notification.type)) {
-      return;
+    try {
+      PushNotification.localNotification({
+        id: toNativeNotificationId(notification.id),
+        channelId: this.getChannelId(notification.type),
+        title: notification.title,
+        message: notification.message,
+        priority: notification.priority,
+        vibrate: true,
+        playSound: true,
+        userInfo: notification.data,
+        smallIcon: 'ic_launcher',
+        largeIcon: 'ic_launcher',
+      });
+    } catch (error) {
+      console.warn('Failed to show notification.', error);
     }
-
-    const channelId = this.getChannelId(notification.type);
-
-    PushNotification.localNotification({
-      id: notification.id,
-      channelId,
-      title: notification.title,
-      message: notification.message,
-      priority: notification.priority,
-      vibrate: true,
-      playSound: true,
-      userInfo: notification.data,
-      smallIcon: 'ic_launcher',
-      largeIcon: 'ic_launcher',
-    });
   }
 
   /**
-   * Schedule notification for later
+   * Schedule a notification for later. Returns whether it was scheduled. The caller decides
+   * whether scheduling is wanted; this only checks that the device allows it.
    */
   public async scheduleNotification(
     notification: CustomNotification,
-    date: Date
-  ): Promise<void> {
-    if (!this.preferences.enabled) {
-      return;
+    date: Date,
+    options: ScheduleOptions = {},
+  ): Promise<boolean> {
+    if (!this.preferences.enabled || !(await this.canScheduleExactAlarms())) {
+      return false;
     }
 
-    const channelId = this.getChannelId(notification.type);
-
-    PushNotification.localNotificationSchedule({
-      id: notification.id,
-      channelId,
-      title: notification.title,
-      message: notification.message,
-      date,
-      priority: notification.priority,
-      vibrate: true,
-      playSound: true,
-      userInfo: notification.data,
-    });
+    try {
+      PushNotification.localNotificationSchedule({
+        id: toNativeNotificationId(notification.id),
+        channelId: this.getChannelId(notification.type),
+        title: notification.title,
+        message: notification.message,
+        date,
+        allowWhileIdle: true,
+        repeatType: options.repeatType,
+        priority: notification.priority,
+        vibrate: true,
+        playSound: true,
+        userInfo: notification.data,
+        smallIcon: 'ic_launcher',
+      });
+      return true;
+    } catch (error) {
+      console.warn('Failed to schedule notification.', error);
+      return false;
+    }
   }
 
   /**
@@ -327,8 +454,6 @@ class NotificationService {
    * Handle remote notification from FCM
    */
   private async handleRemoteNotification(remoteMessage: any): Promise<void> {
-    console.log('Remote notification:', remoteMessage);
-
     if (remoteMessage.notification) {
       await this.sendLocalNotification({
         id: remoteMessage.messageId || `remote-${Date.now()}`,
@@ -355,7 +480,11 @@ class NotificationService {
     preferences: Partial<NotificationPreferences>
   ): Promise<void> {
     this.preferences = { ...this.preferences, ...preferences };
-    await AsyncStorage.setItem('notification_preferences', JSON.stringify(this.preferences));
+    try {
+      await AsyncStorage.setItem(PREFERENCES_KEY, JSON.stringify(this.preferences));
+    } catch (error) {
+      console.warn('Failed to save notification preferences:', error);
+    }
   }
 
   /**
@@ -363,12 +492,12 @@ class NotificationService {
    */
   private async loadPreferences(): Promise<void> {
     try {
-      const stored = await AsyncStorage.getItem('notification_preferences');
+      const stored = await AsyncStorage.getItem(PREFERENCES_KEY);
       if (stored) {
-        this.preferences = JSON.parse(stored);
+        this.preferences = { ...this.preferences, ...JSON.parse(stored) };
       }
     } catch (error) {
-      console.error('Failed to load notification preferences:', error);
+      console.warn('Failed to load notification preferences:', error);
     }
   }
 
@@ -381,9 +510,7 @@ class NotificationService {
     }
 
     const now = new Date();
-    const currentHour = now.getHours();
-    const currentMinute = now.getMinutes();
-    const currentTime = currentHour * 60 + currentMinute;
+    const currentTime = now.getHours() * 60 + now.getMinutes();
 
     const [startHour, startMinute] = this.preferences.quietHoursStart.split(':').map(Number);
     const [endHour, endMinute] = this.preferences.quietHoursEnd.split(':').map(Number);
@@ -393,19 +520,20 @@ class NotificationService {
 
     if (startTime < endTime) {
       return currentTime >= startTime && currentTime < endTime;
-    } else {
-      // Quiet hours span midnight
-      return currentTime >= startTime || currentTime < endTime;
     }
+    // Quiet hours span midnight
+    return currentTime >= startTime || currentTime < endTime;
   }
 
   /**
    * Check if notification type is enabled
    */
-  private isNotificationTypeEnabled(type: string): boolean {
-    const mapping: { [key: string]: keyof NotificationPreferences } = {
+  private isNotificationTypeEnabled(type: NotificationType): boolean {
+    const mapping: Partial<Record<NotificationType, keyof NotificationPreferences>> = {
       energy: 'energyAlerts',
+      alert: 'energyAlerts',
       goal: 'goalReminders',
+      reminder: 'goalReminders',
       achievement: 'achievementAlerts',
       community: 'communityUpdates',
       challenge: 'challengeNotifications',
@@ -419,30 +547,29 @@ class NotificationService {
   /**
    * Get channel ID for notification type
    */
-  private getChannelId(type: string): string {
-    const mapping: { [key: string]: string } = {
+  private getChannelId(type: NotificationType): string {
+    const mapping: Record<NotificationType, string> = {
       energy: 'energy-alerts',
+      alert: 'energy-alerts',
+      reminder: 'reminders',
       goal: 'goal-reminders',
       achievement: 'achievements',
       community: 'community',
       challenge: 'community',
       tip: 'daily-tips',
-      alert: 'energy-alerts',
     };
 
     return mapping[type] || 'energy-alerts';
   }
 
   /**
-   * Save FCM token to cloud
+   * Store the FCM token locally. A backend would receive it here to send targeted pushes.
    */
   private async saveFCMToken(token: string): Promise<void> {
     try {
-      await AsyncStorage.setItem('fcm_token', token);
-      // TODO: Send token to your backend server for push notifications
-      console.log('FCM token saved:', token);
+      await AsyncStorage.setItem(FCM_TOKEN_KEY, token);
     } catch (error) {
-      console.error('Failed to save FCM token:', error);
+      console.warn('Failed to save FCM token:', error);
     }
   }
 
@@ -454,17 +581,25 @@ class NotificationService {
   }
 
   /**
-   * Cancel notification
+   * Cancel a scheduled or delivered notification
    */
   public cancelNotification(id: string): void {
-    PushNotification.cancelLocalNotification(id);
+    try {
+      PushNotification.cancelLocalNotification(toNativeNotificationId(id));
+    } catch (error) {
+      console.warn('Failed to cancel notification.', error);
+    }
   }
 
   /**
    * Cancel all notifications
    */
   public cancelAllNotifications(): void {
-    PushNotification.cancelAllLocalNotifications();
+    try {
+      PushNotification.cancelAllLocalNotifications();
+    } catch (error) {
+      console.warn('Failed to cancel notifications.', error);
+    }
   }
 
   /**

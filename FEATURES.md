@@ -132,17 +132,16 @@ A comprehensive React Native application for tracking, analyzing, and reducing e
 ---
 
 ### 6. 🔔 Reminders & Notifications
-**Location:** `src/context/EnergyContext.tsx` (State Management)
+**Location:** `src/screens/RemindersScreen.tsx`, `src/services/NotificationService.ts`, `src/services/notifications/`
 
 **Features:**
-- **Software-based Reminder System**
-- Create custom reminders for:
-  - Specific appliances
-  - Time-based alerts
-  - Day-of-week scheduling
-- Toggle reminders on/off
-- Persistent storage with AsyncStorage
-- Foundation for push notifications
+- Create reminders for a specific appliance or habit, at a set time (24-hour) on chosen weekdays
+- **Real device notifications:** each active reminder is scheduled as a weekly repeating local notification and rescheduled whenever reminders or the Notifications setting change (`reminderScheduler.ts`)
+- **Energy alerts:** high monthly usage (> 300 kWh), high projected cost (> 50), paused appliances, and 7-day streak milestones — each sent at most once per day/milestone (`NotificationHelper.ts`)
+- **Badge notifications** when a new achievement is earned
+- Quiet hours (22:00–08:00) for alerts; everything respects the in-app Notifications toggle
+- Android 13+ asks for notification permission when notifications are on; on Android 12+ reminders need the "Alarms & reminders" permission — the Reminders screen explains this and opens the system setting (native helper `android/app/src/main/java/com/savevolt/ExactAlarmModule.kt`)
+- All wiring lives in one hook, `useNotificationSync`, mounted once in `App.tsx`
 
 **Examples:**
 - "Turn off lights before sleep"
@@ -257,17 +256,21 @@ A comprehensive React Native application for tracking, analyzing, and reducing e
   
 - **Quick Suggestions:** Context-aware follow-up questions
 - **Conversation History**
-- **User-Friendly UI** with message bubbles
+- **User-Friendly UI** with message bubbles and a typing indicator
+- **Optional Gemini:** add a Gemini API key in Settings for AI answers; the local engine is the fallback
+- **Voice input:** tap the microphone to ask by voice (live transcript while listening). Navigation phrases such as "show my progress" or "show energy tips" open that screen; anything else is sent as a question (`src/services/VoiceCommandService.ts`)
+- **Spoken replies** when "Voice Tips" is on in Settings
 
 **Response Engine:** Pattern matching + data-driven insights
 
 ---
 
 ### 12. 🌤️ Weather-Based & Seasonal Tips
-**Location:** `src/utils/weather.ts` + `src/utils/tips.ts`
+**Location:** `src/services/api/weatherApi.ts` + `src/utils/tips.ts` + `src/components/WeatherWidget.tsx`
 
 **Features:**
-- **Real-time Weather Integration** (Mock data included)
+- **Live weather** from Open-Meteo (geocoding + current conditions, no API key), with a seasonal estimate when offline (marked "EST")
+- **Weather widget** on the Dashboard (tap to open Tips) and at the top of Tips; pull down on either screen to refresh
 - **Seasonal Recommendations:**
   - 🌸 Spring tips
   - ☀️ Summer cooling advice
@@ -279,10 +282,7 @@ A comprehensive React Native application for tracking, analyzing, and reducing e
   - Cold weather (<15°C): Heating efficiency
   - Humidity alerts: Dehumidifier tips
   
-- **Weather Widget** on Tips screen
-- **Location-based** recommendations
-
-**API Ready:** Can integrate OpenWeatherMap API
+- **Location-based** recommendations (city set in Settings)
 
 ---
 
@@ -319,37 +319,72 @@ A comprehensive React Native application for tracking, analyzing, and reducing e
   - Weather location (city name)
   
 - **App Preferences:**
-  - Enable/disable notifications
-  - Dark mode toggle (foundation)
+  - Notifications on/off (alerts and reminders)
+  - Dark mode
+  - Voice tips (text-to-speech)
   
+- **AI Assistant:** optional Gemini API key with a connection test
+
 - **About Section:**
   - App version
   - Description
-  - Copyright info
+
+---
+
+### 15. 👋 Onboarding
+**Location:** `src/screens/OnboardingScreen.tsx`
+
+- Four-slide welcome carousel shown on first launch (Skip / Next / Get Started); completion is saved so it shows once
+
+---
+
+### 16. 🌙 Dark Mode
+**Location:** `src/theme/index.ts`, `src/context/ThemeContext.tsx`
+
+- Every screen, the tab bar, stack headers, and the error screen follow the Dark Mode setting
+- Light and dark palettes share the same tokens; screens build styles with `useThemedStyles(createStyles)`
+- `primaryText` / `dangerText` tokens keep green and red text readable (≥ 4.5:1) on light surfaces
+
+---
+
+### 17. ✏️ Edit Appliances
+**Location:** `src/screens/EditApplianceScreen.tsx`
+
+- Edit name, power, hours, quantity, and category; delete with confirmation
+- Open from the Energy Audit ("Edit Details") or by tapping a Top Consumer on the Dashboard
+- Deleting an appliance also removes it from rooms and reminders
+
+---
+
+### 18. ♿ Accessibility & Polish
+- Screen-reader labels, roles, and states (selected, checked, busy) on interactive elements; headers marked; decorative emoji hidden
+- Charts have spoken summaries; touch targets are at least 44×44
+- Shared empty states with clear next actions, and skeleton placeholders while weather or AI summaries load
+- Branded splash screen on Android and iOS; vector icons in the tab bar
 
 ---
 
 ## 🛠️ Technical Architecture
 
 ### **State Management**
-- **Context API** with `EnergyContext`
-- **AsyncStorage** for data persistence
-- Real-time updates across all screens
+- **Zustand** store (`src/store/energyStore.ts`) persisted to **AsyncStorage**
+- `useEnergy('appliances', 'settings', …)` selects only the keys a screen uses, so screens re-render only when that data changes
+- `ThemeContext` derives the palette from the Dark Mode setting
 
 ### **Data Flow**
 ```
-User Input → Context → AsyncStorage → Dashboard Updates → All Screens
+User Input → Zustand store → AsyncStorage → Dashboard / tips / goals recalculated → Screens
 ```
 
 ### **Key Utilities**
 1. **energy.ts** - Core calculations (kWh, cost, CO₂)
 2. **tips.ts** - Tip generation engine
-3. **weather.ts** - Weather data integration
+3. **services/api/weatherApi.ts** - Live weather with offline fallback
+4. **services/notifications/** - Alerts, reminder scheduling, and sync hook
 
 ### **Navigation**
-- Bottom Tab Navigator with 9 screens
-- Icon-based navigation
-- Smooth transitions
+- Five tabs — Home, Track, Insights, Goals, Account — each with a hub screen and its own stack
+- Vector tab icons, themed headers with a floating back button
 
 ---
 
@@ -440,29 +475,40 @@ npm start
 
 ---
 
-## 🏆 Unique Selling Points
+## 🏆 Core Differentiators
 
-1. **Complete Solution:** 14 features in one app
-2. **Personalized Tips:** AI-driven recommendations
-3. **Visual Impact:** Charts show real savings
-4. **Gamification:** Streaks, badges, achievements
-5. **Environmental Focus:** CO₂ and tree equivalents
-6. **Export Ready:** Share reports easily
-7. **Weather Integration:** Seasonal advice
-8. **Chat Assistant:** Interactive help
+1. **Proactive & Predictive AI Recommendations:** Instead of passive monitoring, SaveVolt uses context (weather, historical usage, high consumers) to predictively alert you to savings opportunities *before* they happen.
+2. **Community-Driven Social Engagement:** Turn energy saving into a team sport with community challenges, leaderboards, and collective goals.
+3. **Multi-Modal Interaction:** Interactive voice/chat support for accessibility.
+4. **Actionable Eco-Impact:** Tangible environmental conversions (CO₂ to Trees).
+5. **Robust Local-First Architecture:** Ensures privacy and immediate feedback.
 
 ---
 
-## 📝 Future Enhancements
+## 📝 Hardware Integration Roadmap
 
-- [ ] Push notifications for reminders
-- [ ] Cloud sync (Firebase)
-- [ ] Social sharing of achievements
-- [ ] Community challenges
-- [ ] Smart home integration (IoT)
-- [ ] Machine learning predictions
+SaveVolt is designed to eventually integrate directly with real-world energy consumption devices.
+- **Phase 1 (Current):** Mock integrations to demonstrate UI capability and projection models.
+- **Phase 2 (Upcoming):** Integration with major smart plug APIs (e.g., Kasa, Tuya) to read live wattage.
+- **Phase 3 (Future):** Utility API connections (e.g., GreenButton) for whole-home energy data.
+
+---
+
+## 💰 Monetization Strategy
+
+- **Freemium Model:** Basic tracking, monthly reports, and standard AI tips remain free.
+- **SaveVolt Pro:** Premium subscription for advanced predictive modeling, real-time hardware integration, and multi-home support.
+- **Hardware Partnerships:** Future bundles with smart plugs and IoT sensors.
+
+---
+
+## 📝 Future Explorations
+
+- [ ] Smart home IoT integration (Phase 2)
+- [x] Local notifications for reminders and energy alerts
+- [ ] Remote push via Firebase (code is ready; needs a Firebase project and `google-services.json`)
 - [ ] Multi-user/household support
-- [ ] Dark mode full implementation
+- [ ] *Exploratory:* Blockchain for transparent carbon credit tracking and tokenized incentives (currently de-emphasized to prioritize core predictive capabilities).
 
 ---
 
@@ -473,10 +519,11 @@ All features are **fully functional** with:
 - ✅ Error handling
 - ✅ Data validation
 - ✅ Persistent storage
-- ✅ Responsive UI
-- ✅ Production-ready code
+- ✅ Responsive UI, light and dark
 
-**No mock data** - all calculations are real and accurate!
+Calculations use your own appliance data; "Load demo data" on the empty Dashboard fills in sample appliances and history for a quick tour.
+
+**Checks:** `npx tsc --noEmit`, `npm run lint`, and `npm test` (unit tests plus a smoke test that renders every screen in light and dark mode with empty and demo data).
 
 ---
 
@@ -485,7 +532,7 @@ All features are **fully functional** with:
 For questions or issues, check the code comments or refer to:
 - `src/types/index.ts` - All TypeScript interfaces
 - `src/utils/energy.ts` - Calculation formulas
-- `src/context/EnergyContext.tsx` - State management
+- `src/store/energyStore.ts` - State management
 
 ---
 

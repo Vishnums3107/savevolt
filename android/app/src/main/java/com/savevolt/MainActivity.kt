@@ -10,6 +10,9 @@ import com.swmansion.rnscreens.fragment.restoration.RNScreensFragmentFactory
 class MainActivity : ReactActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    // The manifest launches this activity with LaunchTheme so the system shows the splash
+    // while the process starts; switch to the real app theme before the window is created.
+    setTheme(R.style.AppTheme)
     supportFragmentManager.fragmentFactory = RNScreensFragmentFactory()
     super.onCreate(savedInstanceState)
   }
