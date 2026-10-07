@@ -1,56 +1,55 @@
 import { Appliance, EnergyTip, ApplianceCategory, EnergyConsumption } from '../types';
+import { applianceDailyKwh } from './analytics';
 
 /**
- * Generate personalized energy-saving tips based on usage patterns
+ * Personal tips built from the user's own appliances. Every tip has a stable id
+ * (`rule:applianceId`), so marking it done or dismissing it survives refreshes, and its saving
+ * is a share of the kWh that appliance actually uses, not a fixed number.
  */
+
+const monthlyKwh = (appliance: Appliance) => (appliance.isActive ? applianceDailyKwh(appliance) * 30 : 0);
+
+const nameHas = (appliance: Appliance, pattern: RegExp) => pattern.test(appliance.name.toLowerCase());
+
+const categoryMonthly = (appliances: Appliance[], category: ApplianceCategory) =>
+  appliances.filter((a) => a.category === category).reduce((sum, a) => sum + monthlyKwh(a), 0);
+
 export const generateEnergyTips = (
   appliances: Appliance[],
   consumptions: EnergyConsumption[]
 ): EnergyTip[] => {
   const tips: EnergyTip[] = [];
-  let tipId = 1;
+  const active = appliances.filter((a) => a.isActive);
+  const sorted = [...consumptions].filter((c) => c.dailyConsumption > 0)
+    .sort((a, b) => b.dailyConsumption - a.dailyConsumption);
+  const totalMonthly = active.reduce((sum, a) => sum + monthlyKwh(a), 0);
 
-  // Sort by consumption to identify high consumers
-  const sortedConsumptions = [...consumptions].sort(
-    (a, b) => b.dailyConsumption - a.dailyConsumption
-  );
-
-  // General tips
-  tips.push({
-    id: `tip-${tipId++}`,
-    title: 'Turn Off Unused Appliances',
-    description:
-      'Make it a habit to turn off lights, fans, and electronics when not in use. Even small savings add up!',
-    category: 'General',
-    potentialSavings: 5,
-    priority: 'high',
-    isPersonalized: false,
-  });
-
-  // Check for high-consumption appliances
-  sortedConsumptions.slice(0, 3).forEach((consumption) => {
+  // Top three consumers get a tip tailored to what they are
+  sorted.slice(0, 3).forEach((consumption) => {
     const appliance = appliances.find((a) => a.id === consumption.applianceId);
     if (!appliance) return;
+    const monthly = consumption.monthlyConsumption;
+    const id = (rule: string) => `tip:${rule}:${appliance.id}`;
 
     switch (appliance.category) {
       case ApplianceCategory.COOLING:
-        if (appliance.powerRating > 1000) {
+        if (appliance.powerRating >= 800) {
           tips.push({
-            id: `tip-${tipId++}`,
-            title: 'Optimize Air Conditioner Usage',
-            description: `Your ${appliance.name} is a top consumer. Set temperature to 24-26°C and use timer mode to save up to 30% energy.`,
+            id: id('ac-setpoint'),
+            title: `Set ${appliance.name} to 25°C`,
+            description: `${appliance.name} uses about ${monthly.toFixed(0)} kWh a month. Each degree warmer cuts cooling energy by roughly 6%; going from 22°C to 25°C and using the sleep timer saves about 18%.`,
             category: ApplianceCategory.COOLING,
-            potentialSavings: consumption.monthlyConsumption * 0.3,
+            potentialSavings: monthly * 0.18,
             priority: 'high',
             isPersonalized: true,
           });
         } else {
           tips.push({
-            id: `tip-${tipId++}`,
-            title: 'Use Fans Efficiently',
-            description: `Turn off ${appliance.name} when leaving the room. Ceiling fans consume less power than AC.`,
+            id: id('fan-off'),
+            title: `Switch ${appliance.name} off in empty rooms`,
+            description: `Fans cool people, not rooms. Turning ${appliance.name} off when nobody is there trims about 20% of its ${monthly.toFixed(1)} kWh a month.`,
             category: ApplianceCategory.COOLING,
-            potentialSavings: consumption.monthlyConsumption * 0.2,
+            potentialSavings: monthly * 0.2,
             priority: 'medium',
             isPersonalized: true,
           });
@@ -58,39 +57,64 @@ export const generateEnergyTips = (
         break;
 
       case ApplianceCategory.LIGHTING:
-        tips.push({
-          id: `tip-${tipId++}`,
-          title: 'Switch to LED Bulbs',
-          description:
-            'Replace traditional bulbs with LEDs. They use 75% less energy and last 25 times longer.',
-          category: ApplianceCategory.LIGHTING,
-          potentialSavings: consumption.monthlyConsumption * 0.75,
-          priority: 'high',
-          isPersonalized: true,
-        });
+        if (appliance.powerRating > 15) {
+          const ledWatts = Math.max(Math.round(appliance.powerRating * 0.15), 5);
+          tips.push({
+            id: id('led-swap'),
+            title: `Swap ${appliance.name} for LEDs`,
+            description: `A ${ledWatts} W LED gives the same light as your ${appliance.powerRating} W bulb${appliance.quantity > 1 ? 's' : ''}, cutting ${appliance.name}'s energy by about ${Math.round((1 - ledWatts / appliance.powerRating) * 100)}%.`,
+            category: ApplianceCategory.LIGHTING,
+            potentialSavings: monthly * (1 - ledWatts / appliance.powerRating),
+            priority: 'high',
+            isPersonalized: true,
+          });
+        } else {
+          tips.push({
+            id: id('lights-daylight'),
+            title: `Use daylight instead of ${appliance.name}`,
+            description: `You already use efficient bulbs. Opening blinds and switching ${appliance.name} off for one daylight hour saves ${((appliance.powerRating * appliance.quantity * 30) / 1000).toFixed(1)} kWh a month.`,
+            category: ApplianceCategory.LIGHTING,
+            potentialSavings: (appliance.powerRating * appliance.quantity * 30) / 1000,
+            priority: 'low',
+            isPersonalized: true,
+          });
+        }
         break;
 
       case ApplianceCategory.HEATING:
         tips.push({
-          id: `tip-${tipId++}`,
-          title: 'Reduce Water Heater Usage',
-          description: `Your ${appliance.name} is energy-intensive. Lower temperature setting and use insulation to reduce consumption by 20%.`,
+          id: id(nameHas(appliance, /water|geyser|boiler/) ? 'heater-temp' : 'heating-schedule'),
+          title: nameHas(appliance, /water|geyser|boiler/)
+            ? `Lower ${appliance.name} to 50°C`
+            : `Put ${appliance.name} on a schedule`,
+          description: nameHas(appliance, /water|geyser|boiler/)
+            ? `Water heated to 60°C+ loses heat all day. Setting ${appliance.name} to 50°C and switching it on 30 minutes before use saves about 20% of ${monthly.toFixed(0)} kWh.`
+            : `Heat only the hours you are home: a timer on ${appliance.name} typically saves 20% of ${monthly.toFixed(0)} kWh a month.`,
           category: ApplianceCategory.HEATING,
-          potentialSavings: consumption.monthlyConsumption * 0.2,
+          potentialSavings: monthly * 0.2,
           priority: 'high',
           isPersonalized: true,
         });
         break;
 
       case ApplianceCategory.KITCHEN:
-        if (appliance.name.toLowerCase().includes('refrigerator')) {
+        if (nameHas(appliance, /fridge|refrigerator|freezer/)) {
           tips.push({
-            id: `tip-${tipId++}`,
-            title: 'Maintain Your Refrigerator',
-            description:
-              'Clean coils regularly, check door seals, and avoid opening frequently to improve efficiency.',
+            id: id('fridge-care'),
+            title: `Tune up ${appliance.name}`,
+            description: 'Clean the rear coils, check the door seal with a sheet of paper, and keep it at 4°C (freezer −18°C). Together that recovers around 10% of its energy.',
             category: ApplianceCategory.KITCHEN,
-            potentialSavings: consumption.monthlyConsumption * 0.15,
+            potentialSavings: monthly * 0.1,
+            priority: 'medium',
+            isPersonalized: true,
+          });
+        } else {
+          tips.push({
+            id: id('kitchen-lids'),
+            title: `Cook smarter with ${appliance.name}`,
+            description: `Lids on pans, batch cooking and the microwave for reheating use far less energy than an oven. Aim for 15% less ${appliance.name} time.`,
+            category: ApplianceCategory.KITCHEN,
+            potentialSavings: monthly * 0.15,
             priority: 'medium',
             isPersonalized: true,
           });
@@ -99,234 +123,169 @@ export const generateEnergyTips = (
 
       case ApplianceCategory.LAUNDRY:
         tips.push({
-          id: `tip-${tipId++}`,
-          title: 'Wash with Cold Water',
-          description:
-            'Use cold water for laundry whenever possible. It saves energy and is gentler on clothes.',
+          id: id('cold-wash'),
+          title: `Wash cold with ${appliance.name}`,
+          description: 'About 90% of a washer\'s energy heats water. Washing at 30°C and running full loads cuts its energy by around 40%.',
           category: ApplianceCategory.LAUNDRY,
-          potentialSavings: consumption.monthlyConsumption * 0.4,
+          potentialSavings: monthly * 0.4,
           priority: 'medium',
           isPersonalized: true,
         });
         break;
+
+      case ApplianceCategory.ENTERTAINMENT:
+        tips.push({
+          id: id('screen-eco'),
+          title: `Turn on eco mode for ${appliance.name}`,
+          description: 'Eco picture mode and lower brightness use 20–30% less power, and a sleep timer stops it running to an empty room.',
+          category: ApplianceCategory.ENTERTAINMENT,
+          potentialSavings: monthly * 0.25,
+          priority: 'medium',
+          isPersonalized: true,
+        });
+        break;
+
+      case ApplianceCategory.OFFICE:
+        tips.push({
+          id: id('sleep-settings'),
+          title: `Let ${appliance.name} sleep`,
+          description: 'Set sleep after 10 idle minutes and switch the power strip off at night. Idle computers and monitors waste about 15% of their use.',
+          category: ApplianceCategory.OFFICE,
+          potentialSavings: monthly * 0.15,
+          priority: 'low',
+          isPersonalized: true,
+        });
+        break;
+
+      default:
+        break;
     }
   });
 
-  // Check for appliances running long hours
-  appliances.forEach((appliance) => {
-    if (appliance.hoursPerDay > 12 && appliance.category !== ApplianceCategory.KITCHEN) {
+  // Long-running devices that are not meant to run all day
+  active.forEach((appliance) => {
+    if (appliance.hoursPerDay > 12 && appliance.hoursPerDay < 24 && appliance.category !== ApplianceCategory.KITCHEN) {
+      const cut = Math.min(3, appliance.hoursPerDay - 10);
       tips.push({
-        id: `tip-${tipId++}`,
-        title: `Reduce ${appliance.name} Usage`,
-        description: `Your ${appliance.name} runs ${appliance.hoursPerDay} hours daily. Try reducing usage by 2-3 hours to save energy.`,
+        id: `tip:long-hours:${appliance.id}`,
+        title: `Run ${appliance.name} ${cut} h less`,
+        description: `${appliance.name} runs ${appliance.hoursPerDay} hours a day. Cutting ${cut} hours saves ${((appliance.powerRating * appliance.quantity * cut * 30) / 1000).toFixed(1)} kWh a month.`,
         category: appliance.category,
-        potentialSavings: (appliance.powerRating * 3 * 30) / 1000,
+        potentialSavings: (appliance.powerRating * appliance.quantity * cut * 30) / 1000,
         priority: 'high',
         isPersonalized: true,
       });
     }
   });
 
-  // Additional general tips
-  tips.push(
-    {
-      id: `tip-${tipId++}`,
-      title: 'Use Natural Light',
-      description:
-        'Open curtains during the day to reduce lighting needs. Natural light is free and healthy!',
-      category: 'General',
-      potentialSavings: 3,
-      priority: 'medium',
-      isPersonalized: false,
-    },
-    {
-      id: `tip-${tipId++}`,
-      title: 'Unplug Chargers',
-      description:
-        'Unplug phone and laptop chargers when not in use. They draw power even when idle.',
-      category: 'General',
-      potentialSavings: 2,
-      priority: 'low',
-      isPersonalized: false,
-    },
-    {
-      id: `tip-${tipId++}`,
-      title: 'Regular Maintenance',
-      description:
-        'Keep appliances well-maintained. Clean filters, check seals, and service equipment regularly.',
-      category: 'General',
-      potentialSavings: 5,
-      priority: 'medium',
-      isPersonalized: false,
+  // Standby: plugged-in electronics left on for many hours
+  const standby = active.filter((a) =>
+    [ApplianceCategory.ENTERTAINMENT, ApplianceCategory.OFFICE].includes(a.category));
+  if (standby.length > 0) {
+    // Typical standby draw is ~2 W per device for the hours it is "off"
+    const kWh = standby.reduce((sum, a) => sum + (2 * a.quantity * Math.max(24 - a.hoursPerDay, 0) * 30) / 1000, 0);
+    if (kWh >= 0.5) {
+      tips.push({
+        id: 'tip:standby-strip',
+        title: 'Cut standby power with a switched strip',
+        description: `${standby.map((a) => a.name).slice(0, 3).join(', ')}${standby.length > 3 ? ' and more' : ''} draw a little power even when "off". A switched power strip saves about ${kWh.toFixed(1)} kWh a month.`,
+        category: 'General',
+        potentialSavings: kWh,
+        priority: 'low',
+        isPersonalized: true,
+      });
     }
-  );
+  }
+
+  // A general habit tip sized to the home
+  if (totalMonthly > 0) {
+    tips.push({
+      id: 'tip:switch-off-habit',
+      title: 'Make “last one out, lights off” a habit',
+      description: `Switching off what nobody is using typically trims 5% of a home's electricity. For you that is about ${(totalMonthly * 0.05).toFixed(1)} kWh a month.`,
+      category: 'General',
+      potentialSavings: totalMonthly * 0.05,
+      priority: 'medium',
+      isPersonalized: false,
+    });
+  }
 
   return tips;
 };
 
 /**
- * Get weather-based energy tips
+ * Weather tips, only for appliance types the home actually has, sized to that category's use.
  */
 export const getWeatherBasedTips = (
   temperature: number,
   season: string,
-  humidity: number
+  humidity: number,
+  appliances: Appliance[] = [],
 ): EnergyTip[] => {
   const tips: EnergyTip[] = [];
-  let tipId = 100;
+  const cooling = categoryMonthly(appliances, ApplianceCategory.COOLING);
+  const heating = categoryMonthly(appliances, ApplianceCategory.HEATING);
+  const laundry = categoryMonthly(appliances, ApplianceCategory.LAUNDRY);
+  const hasCooling = appliances.some((a) => a.category === ApplianceCategory.COOLING);
+  const hasHeating = appliances.some((a) => a.category === ApplianceCategory.HEATING);
 
-  if (temperature > 30) {
+  if (temperature >= 30 && hasCooling) {
     tips.push({
-      id: `weather-tip-${tipId++}`,
-      title: 'Hot Weather Alert',
-      description:
-        'Close curtains during peak sun hours to keep rooms cool naturally. Use fans before switching to AC.',
+      id: 'weather:heat-wave',
+      title: `It's ${Math.round(temperature)}°C: pre-cool, then coast`,
+      description: 'Cool the house in the morning, close blinds on sunny windows by noon, and let the AC hold 25–26°C. Blocking sun alone cuts cooling load by up to 20%.',
       category: ApplianceCategory.COOLING,
-      potentialSavings: 10,
+      potentialSavings: cooling * 0.2,
       priority: 'high',
       isPersonalized: true,
     });
-  }
-
-  if (temperature < 15) {
+  } else if (temperature >= 18 && temperature <= 25 && humidity < 70 && hasCooling) {
     tips.push({
-      id: `weather-tip-${tipId++}`,
-      title: 'Cold Weather Tip',
-      description:
-        'Wear warm clothes indoors and use localized heating instead of central heating to save energy.',
-      category: ApplianceCategory.HEATING,
-      potentialSavings: 15,
-      priority: 'high',
-      isPersonalized: true,
-    });
-  }
-
-  if (season === 'summer') {
-    tips.push({
-      id: `weather-tip-${tipId++}`,
-      title: 'Summer Energy Saving',
-      description:
-        'Set AC temperature to 24-26°C. Every degree lower increases energy consumption by 6%.',
+      id: 'weather:mild-ventilate',
+      title: `Mild ${Math.round(temperature)}°C outside: open the windows`,
+      description: 'Today you can skip the AC entirely. Cross-ventilate in the morning and evening and keep fans for still afternoons.',
       category: ApplianceCategory.COOLING,
-      potentialSavings: 12,
-      priority: 'high',
-      isPersonalized: true,
-    });
-  }
-
-  if (season === 'winter') {
-    tips.push({
-      id: `weather-tip-${tipId++}`,
-      title: 'Winter Efficiency',
-      description:
-        'Use natural sunlight for heating. Open curtains during sunny days and close them at night.',
-      category: ApplianceCategory.HEATING,
-      potentialSavings: 8,
+      potentialSavings: cooling / 30,
       priority: 'medium',
       isPersonalized: true,
     });
   }
 
-  if (humidity > 70) {
+  if (humidity > 75 && temperature >= 24 && hasCooling) {
     tips.push({
-      id: `weather-tip-${tipId++}`,
-      title: 'High Humidity Alert',
-      description:
-        'Use dehumidifier mode on AC instead of full cooling. It consumes less power.',
+      id: 'weather:humid-dry-mode',
+      title: `${Math.round(humidity)}% humidity: use Dry mode`,
+      description: 'Humid air feels hotter than it is. Dry/dehumidify mode keeps you comfortable at a higher set point and uses about 30% less power than Cool.',
       category: ApplianceCategory.COOLING,
-      potentialSavings: 7,
+      potentialSavings: (cooling * 0.3) / 4,
       priority: 'medium',
+      isPersonalized: true,
+    });
+  }
+
+  if (temperature <= 12 && hasHeating) {
+    tips.push({
+      id: 'weather:cold-snap',
+      title: `${Math.round(temperature)}°C outside: keep the heat in`,
+      description: 'Close curtains at dusk, block draughts under doors, and set heating to 19–20°C. Each degree lower saves around 7% of heating energy.',
+      category: ApplianceCategory.HEATING,
+      potentialSavings: heating * 0.14,
+      priority: 'high',
+      isPersonalized: true,
+    });
+  }
+
+  if (laundry > 0 && humidity < 60 && temperature >= 15 && season !== 'winter') {
+    tips.push({
+      id: 'weather:line-dry',
+      title: 'Good drying weather today',
+      description: `It's ${Math.round(temperature)}°C with ${Math.round(humidity)}% humidity. Hang laundry outside instead of using a dryer.`,
+      category: ApplianceCategory.LAUNDRY,
+      potentialSavings: laundry * 0.1,
+      priority: 'low',
       isPersonalized: true,
     });
   }
 
   return tips;
-};
-
-/**
- * Generate chatbot responses based on user queries
- */
-export const generateChatbotResponse = (
-  query: string,
-  appliances: Appliance[],
-  tips: EnergyTip[]
-): { response: string; suggestions: string[] } => {
-  const lowerQuery = query.toLowerCase();
-
-  // Energy saving tips
-  if (lowerQuery.includes('save') || lowerQuery.includes('reduce')) {
-    const topTips = tips.slice(0, 3);
-    return {
-      response: `Here are my top 3 energy-saving tips for you:\n\n${topTips
-        .map((tip, i) => `${i + 1}. ${tip.title}: ${tip.description}`)
-        .join('\n\n')}`,
-      suggestions: ['Show more tips', 'Calculate savings', 'View dashboard'],
-    };
-  }
-
-  // Appliance-specific queries
-  if (lowerQuery.includes('consumption') || lowerQuery.includes('usage')) {
-    const totalConsumption = appliances.reduce((sum, app) => {
-      return sum + (app.powerRating * app.hoursPerDay * app.quantity) / 1000;
-    }, 0);
-
-    return {
-      response: `Your current daily energy consumption is ${totalConsumption.toFixed(
-        2
-      )} kWh. The top consumers are your ${appliances
-        .slice(0, 3)
-        .map((a) => a.name)
-        .join(', ')}.`,
-      suggestions: ['View detailed report', 'Get optimization tips', 'Set goals'],
-    };
-  }
-
-  // Cost queries
-  if (lowerQuery.includes('cost') || lowerQuery.includes('bill')) {
-    const totalConsumption = appliances.reduce((sum, app) => {
-      return sum + (app.powerRating * app.hoursPerDay * app.quantity) / 1000;
-    }, 0);
-    const monthlyCost = totalConsumption * 30 * 0.12;
-
-    return {
-      response: `Your estimated monthly electricity cost is $${monthlyCost.toFixed(
-        2
-      )}. You can reduce this by following our energy-saving tips!`,
-      suggestions: ['See breakdown', 'Reduce cost', 'Compare with last month'],
-    };
-  }
-
-  // CO2/Environment queries
-  if (
-    lowerQuery.includes('co2') ||
-    lowerQuery.includes('carbon') ||
-    lowerQuery.includes('environment')
-  ) {
-    return {
-      response:
-        'Great question! Your energy consumption contributes to CO₂ emissions. On average, every kWh you save prevents 0.92 kg of CO₂ from entering the atmosphere. Check your dashboard to see your carbon footprint!',
-      suggestions: ['View CO₂ dashboard', 'Get green tips', 'Calculate impact'],
-    };
-  }
-
-  // Goals
-  if (lowerQuery.includes('goal') || lowerQuery.includes('target')) {
-    return {
-      response:
-        'Setting goals is a great way to track progress! I recommend starting with a 10-15% reduction in your current consumption. Would you like me to help you set up a personalized goal?',
-      suggestions: ['Set goal', 'View progress', 'Get recommendations'],
-    };
-  }
-
-  // Default response
-  return {
-    response:
-      "I'm your Energy Assistant! I can help you with energy-saving tips, usage analysis, cost calculations, and more. What would you like to know?",
-    suggestions: [
-      'How can I save energy?',
-      'Show my consumption',
-      'Calculate my bill',
-      'Environmental impact',
-    ],
-  };
 };

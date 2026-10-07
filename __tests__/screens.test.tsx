@@ -32,6 +32,12 @@ const DEMO_APPLIANCE_ID = 'appliance-demo-3';
 const SCREENS: ScreenCase[] = [
   { name: 'Dashboard', load: () => require('../src/screens/DashboardScreen').default },
   { name: 'UsageInput', load: () => require('../src/screens/UsageInputScreen').default },
+  { name: 'DailyLog (hours)', load: () => require('../src/screens/DailyLogScreen').default },
+  {
+    name: 'DailyLog (meter)',
+    load: () => require('../src/screens/DailyLogScreen').default,
+    props: { route: { params: { mode: 'meter' } } },
+  },
   { name: 'EnergyAudit', load: () => require('../src/screens/EnergyAuditScreen').default },
   {
     name: 'EditAppliance (existing appliance)',
@@ -59,8 +65,6 @@ const SCREENS: ScreenCase[] = [
   { name: 'Households', load: () => require('../src/screens/HouseholdsScreen').default },
   { name: 'AccountSync', load: () => require('../src/screens/AccountSyncScreen').default },
   { name: 'SmartHome', load: () => require('../src/screens/SmartHomeScreen').default },
-  // Not registered in AppNavigator; still rendered so it cannot crash if it is wired up again
-  { name: 'More', load: () => require('../src/screens/MoreScreen').default, theming: 'legacy' },
   ...(['track', 'insights', 'goals', 'profile'] as const).map((area) => ({
     name: `FeatureHub (${area})`,
     load: () => require('../src/screens/FeatureHubScreen').default,
@@ -86,7 +90,7 @@ const NOW = new Date(2026, 0, 14, 12, 0, 0, 0);
 
 // Clean store (state + actions) captured before any test touches it
 const baseline: EnergyStore = useEnergyStore.getState();
-const originalFetch = global.fetch;
+const originalFetch = globalThis.fetch;
 
 const makeProps = (screen: ScreenCase): ScreenProps => ({
   navigation: {
@@ -346,11 +350,11 @@ const LIGHT_ONLY_TEXT = lightOnly(['text']);
 let consoleErrors: string[] = [];
 
 beforeAll(() => {
-  global.fetch = jest.fn(() => Promise.reject(new Error('Network disabled in tests'))) as typeof fetch;
+  globalThis.fetch = jest.fn(() => Promise.reject(new Error('Network disabled in tests'))) as typeof fetch;
 });
 
 afterAll(() => {
-  global.fetch = originalFetch;
+  globalThis.fetch = originalFetch;
   useEnergyStore.setState(baseline, true);
 });
 

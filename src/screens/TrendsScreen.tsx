@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { AccessibilityInfo, View, Text, StyleSheet, ScrollView, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Dimensions } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { NavigationProp, ParamListBase, useNavigation } from '@react-navigation/native';
 import { useEnergy } from '../context/EnergyContext';
@@ -34,11 +34,10 @@ const average = (values: number[]) =>
   values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
 
 const TrendsScreen = () => {
-  const { usageRecords, dashboardData, settings, saveUsageRecord } = useEnergy(
+  const { usageRecords, dashboardData, settings } = useEnergy(
     'usageRecords',
     'dashboardData',
     'settings',
-    'saveUsageRecord',
   );
   const { colors } = useTheme();
   const s = useThemedStyles(createStyles);
@@ -91,11 +90,10 @@ const TrendsScreen = () => {
     propsForBackgroundLines: { strokeDasharray: '', stroke: colors.borderLight },
   }), [colors]);
 
+  // Logging happens in the daily log, where the user confirms how long each device ran
   const handleLogUsage = useCallback(() => {
-    saveUsageRecord()
-      .then(() => AccessibilityInfo.announceForAccessibility('Today’s usage logged'))
-      .catch((error: unknown) => console.error('Failed to log usage:', error));
-  }, [saveUsageRecord]);
+    navigation.navigate('Track', { screen: 'DailyLog', initial: false });
+  }, [navigation]);
 
   const openAddAppliance = useCallback(() => {
     navigation.navigate('Track', { screen: 'AddAppliance', initial: false });

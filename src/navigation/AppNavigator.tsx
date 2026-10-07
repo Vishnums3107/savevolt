@@ -2,10 +2,13 @@ import React, { useMemo } from 'react';
 import { DarkTheme, DefaultTheme, NavigationContainer, Theme } from '@react-navigation/native';
 import { BottomTabNavigationOptions, createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createStackNavigator, StackNavigationOptions } from '@react-navigation/stack';
-import { StyleSheet, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, TouchableOpacity } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { ThemeColors, useTheme, useThemedStyles } from '../context/ThemeContext';
-import { Radius, Shadows, Typography } from '../theme';
+import { Radius, Shadows } from '../theme';
+import TabBar from './TabBar';
+import StatusBarBackdrop from '../components/StatusBarBackdrop';
+import DailyLogScreen from '../screens/DailyLogScreen';
 
 import DashboardScreen from '../screens/DashboardScreen';
 import UsageInputScreen from '../screens/UsageInputScreen';
@@ -34,62 +37,12 @@ const Stack = createStackNavigator();
 
 type TabName = 'Home' | 'Track' | 'Insights' | 'Goals' | 'Account';
 
-const TAB_ICONS: Record<TabName, { focused: string; unfocused: string }> = {
-  Home: { focused: 'home-variant', unfocused: 'home-variant-outline' },
-  Track: { focused: 'plus-circle', unfocused: 'plus-circle-outline' },
-  Insights: { focused: 'chart-donut', unfocused: 'chart-donut' },
-  Goals: { focused: 'trophy', unfocused: 'trophy-outline' },
-  Account: { focused: 'account-circle', unfocused: 'account-circle-outline' },
-};
-
-/** Active tab tint: the brighter green reads better on the dark tab bar. */
-const activeTabColor = (c: ThemeColors, isDark: boolean) => (isDark ? c.primary : c.primaryDark);
-
-const createTabStyles = (c: ThemeColors, isDark: boolean) =>
-  StyleSheet.create({
-    bar: {
-      height: 68,
-      paddingBottom: 9,
-      paddingTop: 7,
-      backgroundColor: c.tabBar,
-      // The dark bar is close to the background, so a hairline keeps it separated
-      borderTopWidth: isDark ? StyleSheet.hairlineWidth : 0,
-      borderTopColor: c.border,
-      ...Shadows.lg,
-    },
-    label: { ...Typography.labelSmall, fontSize: 10, letterSpacing: 0.2 },
-    iconWrap: { alignItems: 'center', justifyContent: 'center' },
-    dot: { width: 4, height: 4, borderRadius: 2, marginTop: 2, backgroundColor: activeTabColor(c, isDark) },
-  });
-
-const TabIcon = ({ name, focused, color }: { name: TabName; focused: boolean; color: string }) => {
-  const s = useThemedStyles(createTabStyles);
-  return (
-    <View style={s.iconWrap}>
-      <Icon
-        name={focused ? TAB_ICONS[name].focused : TAB_ICONS[name].unfocused}
-        size={24}
-        color={color}
-        accessible={false}
-        importantForAccessibility="no"
-      />
-      {focused && <View style={s.dot} />}
-    </View>
-  );
-};
-
-const tabOptions = (name: TabName): BottomTabNavigationOptions => ({
-  tabBarLabel: name,
-  tabBarAccessibilityLabel: `${name} tab`,
-  tabBarIcon: ({ focused, color }) => <TabIcon name={name} focused={focused} color={color} />,
-});
-
 const TAB_OPTIONS: Record<TabName, BottomTabNavigationOptions> = {
-  Home: tabOptions('Home'),
-  Track: tabOptions('Track'),
-  Insights: tabOptions('Insights'),
-  Goals: tabOptions('Goals'),
-  Account: tabOptions('Account'),
+  Home: { tabBarAccessibilityLabel: 'Home tab' },
+  Track: { tabBarAccessibilityLabel: 'Track tab' },
+  Insights: { tabBarAccessibilityLabel: 'Insights tab' },
+  Goals: { tabBarAccessibilityLabel: 'Goals tab' },
+  Account: { tabBarAccessibilityLabel: 'Me tab' },
 };
 
 const createStackStyles = (c: ThemeColors) =>
@@ -154,6 +107,7 @@ const AccountHome = ({ navigation }: any) => <FeatureHubScreen area="profile" na
 const TrackStack = () => (
   <Stack.Navigator screenOptions={sharedStackOptions}>
     <Stack.Screen name="TrackHome" component={TrackHome} options={{ headerShown: false }} />
+    <Stack.Screen name="DailyLog" component={DailyLogScreen} />
     <Stack.Screen name="AddAppliance" component={UsageInputScreen} />
     <Stack.Screen name="Audit" component={EnergyAuditScreen} />
     <Stack.Screen name="EditAppliance" component={EditApplianceScreen} />
@@ -194,9 +148,10 @@ const AccountStack = () => (
   </Stack.Navigator>
 );
 
+const renderTabBar = (props: React.ComponentProps<typeof TabBar>) => <TabBar {...props} />;
+
 const AppNavigator = () => {
   const { colors, isDark } = useTheme();
-  const s = useThemedStyles(createTabStyles);
 
   // Stack cards and tab scenes paint theme.colors.background, so matching it avoids a white
   // flash behind transitions in dark mode.
@@ -215,27 +170,21 @@ const AppNavigator = () => {
     };
   }, [colors, isDark]);
 
-  const tabScreenOptions = useMemo<BottomTabNavigationOptions>(
-    () => ({
-      headerShown: false,
-      tabBarActiveTintColor: activeTabColor(colors, isDark),
-      tabBarInactiveTintColor: colors.tabInactive,
-      tabBarStyle: s.bar,
-      tabBarLabelStyle: s.label,
-    }),
-    [colors, isDark, s],
-  );
+  const tabScreenOptions = useMemo<BottomTabNavigationOptions>(() => ({ headerShown: false }), []);
 
   return (
-    <NavigationContainer theme={navigationTheme}>
-      <Tab.Navigator screenOptions={tabScreenOptions}>
-        <Tab.Screen name="Home" component={HomeStack} options={TAB_OPTIONS.Home} />
-        <Tab.Screen name="Track" component={TrackStack} options={TAB_OPTIONS.Track} />
-        <Tab.Screen name="Insights" component={InsightsStack} options={TAB_OPTIONS.Insights} />
-        <Tab.Screen name="Goals" component={GoalsStack} options={TAB_OPTIONS.Goals} />
-        <Tab.Screen name="Account" component={AccountStack} options={TAB_OPTIONS.Account} />
-      </Tab.Navigator>
-    </NavigationContainer>
+    <>
+      <NavigationContainer theme={navigationTheme}>
+        <Tab.Navigator screenOptions={tabScreenOptions} tabBar={renderTabBar}>
+          <Tab.Screen name="Home" component={HomeStack} options={TAB_OPTIONS.Home} />
+          <Tab.Screen name="Track" component={TrackStack} options={TAB_OPTIONS.Track} />
+          <Tab.Screen name="Insights" component={InsightsStack} options={TAB_OPTIONS.Insights} />
+          <Tab.Screen name="Goals" component={GoalsStack} options={TAB_OPTIONS.Goals} />
+          <Tab.Screen name="Account" component={AccountStack} options={TAB_OPTIONS.Account} />
+        </Tab.Navigator>
+      </NavigationContainer>
+      <StatusBarBackdrop />
+    </>
   );
 };
 

@@ -16,6 +16,7 @@ import OnboardingScreen from './src/screens/OnboardingScreen';
 import { initializeTts } from './src/utils/voice';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { useNotificationSync } from './src/services/notifications/useNotificationSync';
+import { ToastHost } from './src/components/ui';
 
 function AppContent() {
   const { isLoading, hasSeenOnboarding, completeOnboarding } = useEnergy(
@@ -67,6 +68,7 @@ function App() {
             <ThemeProvider>
               <ThemedStatusBar />
               <AppContent />
+              <ToastHost />
             </ThemeProvider>
           </EnergyProvider>
         </ErrorBoundary>

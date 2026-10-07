@@ -7,6 +7,7 @@ import {
   TextInput,
   Alert,
   Modal,
+  Share,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { Typography, Spacing, Radius, Shadows } from '../theme';
@@ -16,16 +17,26 @@ import AccessibleTouchable from '../components/AccessibleTouchable';
 import EmptyState from '../components/EmptyState';
 import FocusAwareStatusBar from '../components/FocusAwareStatusBar';
 import { formatEnergy } from '../utils/energy';
+import { Button, Sheet, TextField, toast } from '../components/ui';
+import { CommunityGoal } from '../types';
 
 const DAY_MS = 1000 * 60 * 60 * 24;
 const VISIBLE_PARTICIPANTS = 5;
 
 const CommunityGoalsScreen = () => {
-  const { communityGoals, addCommunityGoal, updateCommunityGoal } = useEnergy(
-    'communityGoals',
-    'addCommunityGoal',
-    'updateCommunityGoal',
+  const {
+    communityGoals, addCommunityGoal, addContribution, deleteCommunityGoal, importShareCode,
+    getGoalInviteCode, getContributionCode, settings,
+  } = useEnergy(
+    'communityGoals', 'addCommunityGoal', 'addContribution', 'deleteCommunityGoal', 'importShareCode',
+    'getGoalInviteCode', 'getContributionCode', 'settings',
   );
+  const me = settings.displayName?.trim() || 'You';
+  const [actionGoal, setActionGoal] = useState<CommunityGoal | null>(null);
+  const [manualKwh, setManualKwh] = useState('');
+  const [manualWho, setManualWho] = useState('');
+  const [code, setCode] = useState('');
+  const [importing, setImporting] = useState(false);
   const { colors, isDark } = useTheme();
   const s = useThemedStyles(createStyles);
   const [showModal, setShowModal] = useState(false);
@@ -61,8 +72,9 @@ const CommunityGoalsScreen = () => {
   const closeModal = useCallback(() => setShowModal(false), []);
 
   const handleCreateGoal = async () => {
-    if (!title.trim() || !targetEnergy) {
-      Alert.alert('Error', 'Please fill in all required fields');
+    const target = Number.parseFloat(targetEnergy.replace(',', '.'));
+    if (!title.trim() || !Number.isFinite(target) || target <= 0) {
+      Alert.alert('Check your goal', 'Enter a name and a kWh target greater than zero.');
       return;
     }
 
@@ -71,14 +83,20 @@ const CommunityGoalsScreen = () => {
       .map(p => p.trim())
       .filter(p => p.length > 0);
 
-    await addCommunityGoal({
-      title: title.trim(),
-      description: description.trim(),
-      targetEnergy: parseFloat(targetEnergy),
-      participants: participantsList,
-      deadline: new Date(Date.now() + 30 * DAY_MS).toISOString(), // 30 days from now
-      createdBy: 'You',
-    });
+    try {
+      await addCommunityGoal({
+        title: title.trim(),
+        description: description.trim(),
+        targetEnergy: target,
+        participants: [me, ...participantsList.filter((p) => p !== me)],
+        deadline: new Date(Date.now() + 30 * DAY_MS).toISOString(), // 30 days from now
+        createdBy: me,
+        me,
+      });
+    } catch (error) {
+      Alert.alert('Check your goal', error instanceof Error ? error.message : 'Could not create the goal.');
+      return;
+    }
 
     setShowModal(false);
     setTitle('');
@@ -86,38 +104,68 @@ const CommunityGoalsScreen = () => {
     setTargetEnergy('');
     setParticipants('');
 
-    Alert.alert('Success', 'Community goal created successfully!');
+    toast.success('Shared goal created. Tap Contribute to invite people.');
   };
 
-  const handleContribute = useCallback((goalId: string, amount: number) => {
-    const goal = communityGoals.find(g => g.id === goalId);
-    if (!goal) return;
+  const openActions = useCallback((goal: CommunityGoal) => {
+    setManualKwh('');
+    setManualWho(goal.me || me);
+    setActionGoal(goal);
+  }, [me]);
 
-    const newEnergy = Math.min(goal.currentEnergy + amount, goal.targetEnergy);
-    const isAchieved = newEnergy >= goal.targetEnergy;
-
-    updateCommunityGoal(goalId, {
-      currentEnergy: newEnergy,
-      isAchieved,
-    });
-
-    if (isAchieved && !goal.isAchieved) {
-      Alert.alert('🎉 Goal Achieved!', `Congratulations! The community goal "${goal.title}" has been achieved!`);
+  const shareInvite = async (goal: CommunityGoal) => {
+    try {
+      const invite = getGoalInviteCode(goal.id);
+      await Share.share({
+        message: `Join my SaveVolt goal "${goal.title}" (save ${formatEnergy(goal.targetEnergy)} together). In SaveVolt open Goals, Shared goal planner, Import code and paste:\n\n${invite}`,
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not share the invite.');
     }
-  }, [communityGoals, updateCommunityGoal]);
+  };
 
-  const promptContribution = useCallback((goalId: string, goalTitle: string) => {
-    Alert.alert(
-      'Contribute Energy Savings',
-      `Enter kWh saved for "${goalTitle}"`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: '+1 kWh', onPress: () => handleContribute(goalId, 1) },
-        { text: '+5 kWh', onPress: () => handleContribute(goalId, 5) },
-        { text: '+10 kWh', onPress: () => handleContribute(goalId, 10) },
-      ]
-    );
-  }, [handleContribute]);
+  const shareUpdate = async (goal: CommunityGoal) => {
+    try {
+      const update = getContributionCode(goal.id);
+      await Share.share({
+        message: `My SaveVolt savings for "${goal.title}". Paste this code in Goals, Shared goal planner, Import code:\n\n${update}`,
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not share your update.');
+    }
+  };
+
+  const saveManual = async () => {
+    if (!actionGoal) return;
+    const kWh = Number.parseFloat(manualKwh.replace(',', '.'));
+    try {
+      await addContribution(actionGoal.id, { participant: manualWho, kWh });
+      toast.success(`Added ${formatEnergy(kWh)} for ${manualWho.trim()}.`);
+      setActionGoal(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not add the saving.');
+    }
+  };
+
+  const confirmDelete = (goal: CommunityGoal) => {
+    Alert.alert('Delete goal?', `Remove "${goal.title}" and its contributions from this device?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => { setActionGoal(null); deleteCommunityGoal(goal.id); } },
+    ]);
+  };
+
+  const runImport = async () => {
+    setImporting(true);
+    try {
+      const result = await importShareCode(code);
+      setCode('');
+      toast.success(result.message);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not import that code.');
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const keyboardAppearance = isDark ? 'dark' : 'light';
 
@@ -130,7 +178,21 @@ const CommunityGoalsScreen = () => {
       </LinearGradient>
 
       <View style={s.localNotice}>
-        <Text style={s.localNoticeText}>Goals and contributions are saved on this device. Share details manually until cloud collaboration is connected.</Text>
+        <Text style={s.localNoticeText}>
+          Your logged savings count automatically. To team up, share an invite code from a goal; teammates send back update codes that you paste here.
+        </Text>
+        <View style={s.importRow}>
+          <TextField
+            label="Import a SaveVolt code"
+            placeholder="Paste an invite, update or score code"
+            value={code}
+            onChangeText={setCode}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={s.importField}
+          />
+          <Button label="Import" size="sm" onPress={runImport} loading={importing} disabled={!code.trim()} />
+        </View>
       </View>
 
       <ScrollView style={s.content} contentContainerStyle={s.contentContainer}>
@@ -201,6 +263,19 @@ const CommunityGoalsScreen = () => {
                 <Text style={s.progressPercentage}>{progress.toFixed(0)}%</Text>
               </View>
 
+              {(goal.contributions ?? []).length > 0 ? (
+                <View style={s.participantsSection}>
+                  {Object.entries((goal.contributions ?? []).reduce<Record<string, number>>((acc, c) => {
+                    acc[c.participant] = (acc[c.participant] ?? 0) + c.kWh;
+                    return acc;
+                  }, {})).sort((a, b) => b[1] - a[1]).map(([name, kWh]) => (
+                    <Text key={name} style={s.goalDescription}>
+                      {name}: {formatEnergy(kWh)}{name === (goal.me || me) ? ' (from your logs and entries)' : ''}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
+
               <View style={s.participantsSection} accessible accessibilityLabel={participantSummary}>
                 <Text style={s.participantsLabel}>
                   👥 {goal.participants.length} Participants
@@ -231,8 +306,8 @@ const CommunityGoalsScreen = () => {
                 {!goal.isAchieved && (
                   <AccessibleTouchable
                     label={`Contribute to ${goal.title}`}
-                    hint="Choose how many kWh of savings to add"
-                    onPress={() => promptContribution(goal.id, goal.title)}
+                    hint="Invite people, send your update or add a saving"
+                    onPress={() => openActions(goal)}
                   >
                     <LinearGradient colors={ctaGradient} style={s.contributeButton}>
                       <Text style={s.contributeButtonText}>+ Contribute</Text>
@@ -347,6 +422,30 @@ const CommunityGoalsScreen = () => {
           </View>
         </View>
       </Modal>
+      <Sheet
+        visible={actionGoal !== null}
+        onClose={() => setActionGoal(null)}
+        title={actionGoal?.title ?? 'Shared goal'}
+        subtitle="Your logged savings are added automatically."
+      >
+        {actionGoal ? (
+          <>
+            <Button label="Invite people" icon="account-plus-outline" variant="secondary" full onPress={() => shareInvite(actionGoal)} />
+            <Button label="Send my update" icon="send-outline" variant="secondary" full onPress={() => shareUpdate(actionGoal)} />
+            <TextField label="Saved by" value={manualWho} onChangeText={setManualWho} maxLength={40} />
+            <TextField
+              label="kWh saved (manual entry)"
+              value={manualKwh}
+              onChangeText={setManualKwh}
+              keyboardType="decimal-pad"
+              suffix="kWh"
+              hint="For savings not in your logs, e.g. a teammate without the app."
+            />
+            <Button label="Add saving" icon="plus" full onPress={saveManual} disabled={!manualKwh.trim() || !manualWho.trim()} />
+            <Button label="Delete goal" icon="trash-can-outline" variant="danger" size="sm" full onPress={() => confirmDelete(actionGoal)} />
+          </>
+        ) : null}
+      </Sheet>
     </View>
   );
 };
@@ -390,6 +489,8 @@ const createStyles = (c: ThemeColors) => {
       borderLeftColor: c.primaryDark,
       padding: Spacing.md,
     },
+    importRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, marginTop: 10 },
+    importField: { flex: 1 },
     localNoticeText: { ...Typography.bodySmall, color: c.text, lineHeight: 18 },
     goalCard: {
       backgroundColor: c.card,

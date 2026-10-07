@@ -73,7 +73,7 @@ const LightColors = {
   inputBg:      '#F0F2F5',
 
   // Hero headers stay dark in both modes; text on them uses textOnDark
-  heroGradient: ['#0B1120', '#162032', '#1A2E40'] as [string, string, string],
+  heroGradient: ['#050B1A', '#0B1630', '#0E2638'] as [string, string, string],
   // Text/icons drawn on top of the primary green
   onPrimary:    '#0B1120',
   // Modal scrim
@@ -84,6 +84,34 @@ const LightColors = {
   switchThumbOff: '#F8FAFC',
   // Floating back button in stack headers
   backButtonBg: 'rgba(255,255,255,0.92)',
+
+  // ─── Aurora identity (v2) ───
+  // Extra accents used by charts, gradients and category colours
+  cyan:         '#06B6D4',
+  violet:       '#8B5CF6',
+  rose:         '#F43F5E',
+  amber:        '#F59E0B',
+  // Card outline: a whisper of contrast so white cards lift off the grey page
+  cardBorder:   '#E6EBF2',
+  // Raised surface inside a card (stepper wells, segmented tracks)
+  surfaceMuted: '#F4F6FA',
+  // Glass panels drawn on top of the (always dark) hero
+  glass:        'rgba(255,255,255,0.08)',
+  glassStrong:  'rgba(255,255,255,0.14)',
+  glassBorder:  'rgba(255,255,255,0.14)',
+  // Aurora glow blobs behind hero headers
+  auroraA:      '#00E676',
+  auroraB:      '#22D3EE',
+  auroraC:      '#8B5CF6',
+  // Named gradients
+  gradVolt:     ['#00E676', '#00BFA5'] as [string, string],
+  gradOcean:    ['#3B82F6', '#06B6D4'] as [string, string],
+  gradGrape:    ['#8B5CF6', '#EC4899'] as [string, string],
+  gradSunset:   ['#F59E0B', '#F43F5E'] as [string, string],
+  gradNight:    ['#1E293B', '#0F172A'] as [string, string],
+  // Toasts sit on top of everything
+  toastBg:      '#0F172A',
+  toastText:    '#F8FAFC',
 };
 
 // ─── Dark Palette ───────────────────────────────────────────────
@@ -141,12 +169,32 @@ const DarkColors: typeof LightColors = {
 
   inputBg:      '#1A2744',
 
-  heroGradient: ['#070D1A', '#111D30', '#16263D'],
+  heroGradient: ['#03070F', '#0A1428', '#0D2133'],
   onPrimary:    '#0B1120',
   overlay:      'rgba(0,0,0,0.7)',
   skeleton:     '#1E293B',
   switchThumbOff: '#94A3B8',
   backButtonBg: 'rgba(22,32,50,0.92)',
+
+  cyan:         '#22D3EE',
+  violet:       '#A78BFA',
+  rose:         '#FB7185',
+  amber:        '#FBBF24',
+  cardBorder:   'rgba(148,163,184,0.12)',
+  surfaceMuted: '#1C2A42',
+  glass:        'rgba(255,255,255,0.07)',
+  glassStrong:  'rgba(255,255,255,0.12)',
+  glassBorder:  'rgba(255,255,255,0.12)',
+  auroraA:      '#00E676',
+  auroraB:      '#22D3EE',
+  auroraC:      '#A78BFA',
+  gradVolt:     ['#00E676', '#00BFA5'],
+  gradOcean:    ['#3B82F6', '#22D3EE'],
+  gradGrape:    ['#A78BFA', '#F472B6'],
+  gradSunset:   ['#FBBF24', '#FB7185'],
+  gradNight:    ['#16263D', '#0B1120'],
+  toastBg:      '#E2E8F0',
+  toastText:    '#0B1120',
 };
 
 export type ThemeColors = typeof LightColors;
@@ -201,7 +249,8 @@ export const Radius = {
   lg:   16,
   xl:   20,
   pill:  999,
-  card:  16,
+  card:  20,
+  sheet: 28,
 };
 
 // ─── Shadows ────────────────────────────────────────────────────

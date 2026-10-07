@@ -1,6 +1,5 @@
 import React, { useMemo } from 'react';
 import {
-  Alert,
   Image,
   ScrollView,
   StyleSheet,
@@ -47,7 +46,7 @@ const HUB_COPY: Record<HubArea, { eyebrow: string; title: string; subtitle: stri
     eyebrow: 'ENERGY OPERATIONS',
     title: 'Track your home',
     subtitle: 'Keep every device, room, and daily reading up to date.',
-    action: 'Log today’s usage',
+    action: 'Log today',
   },
   insights: {
     eyebrow: 'ANALYSIS CENTRE',
@@ -71,7 +70,8 @@ const HUB_COPY: Record<HubArea, { eyebrow: string; title: string; subtitle: stri
 
 const FEATURE_TILES: Record<HubArea, FeatureTile[]> = {
   track: [
-    { title: 'Add appliance', description: 'Add a device with power and usage details.', screen: 'AddAppliance', accent: 'primary', tag: 'START HERE' },
+    { title: 'Daily log', description: 'Confirm how long devices ran, or enter a meter reading.', screen: 'DailyLog', accent: 'primary', tag: 'DAILY' },
+    { title: 'Add appliance', description: 'Add a device with power and usage details.', screen: 'AddAppliance', accent: 'success' },
     { title: 'Live audit', description: 'Compare devices and switch tracking on or off.', screen: 'Audit', accent: 'info' },
     { title: 'Home energy map', description: 'Assign devices to rooms and spot hotspots.', screen: 'Map', accent: 'accent' },
     { title: 'Smart plugs', description: 'Connect Home Assistant for live readings and plug control.', screen: 'SmartHome', accent: 'success' },
@@ -85,9 +85,9 @@ const FEATURE_TILES: Record<HubArea, FeatureTile[]> = {
   goals: [
     { title: 'My goals', description: 'Create monthly energy, cost, and CO2 limits.', screen: 'Progress', accent: 'primary', tag: 'CORE' },
     { title: 'Challenges', description: 'Take on focused saving habits and rewards.', screen: 'Challenges', accent: 'warning' },
-    { title: 'Shared goal planner', description: 'Plan a group goal and record local contributions.', screen: 'Community', accent: 'info' },
+    { title: 'Shared goal planner', description: 'Save together with invite codes; your logs count automatically.', screen: 'Community', accent: 'info' },
     { title: 'Impact', description: 'Translate energy choices into environmental impact.', screen: 'Impact', accent: 'success' },
-    { title: 'Leaderboard preview', description: 'Explore a local preview of ranked progress.', screen: 'Leaderboard', accent: 'accent', tag: 'LOCAL' },
+    { title: 'Leaderboard', description: 'Compare points and savings with friends using score codes.', screen: 'Leaderboard', accent: 'accent' },
   ],
   profile: [
     { title: 'Homes', description: 'Switch between homes with separate devices and energy records.', screen: 'Households', accent: 'info' },
@@ -117,7 +117,6 @@ const FeatureHubScreen = ({ area, navigation }: FeatureHubScreenProps) => {
     streak,
     reminders,
     settings,
-    saveUsageRecord,
   } = useEnergy(
     'appliances',
     'dashboardData',
@@ -128,7 +127,6 @@ const FeatureHubScreen = ({ area, navigation }: FeatureHubScreenProps) => {
     'streak',
     'reminders',
     'settings',
-    'saveUsageRecord',
   );
   const { colors } = useTheme();
   const styles = useThemedStyles(createStyles);
@@ -174,17 +172,12 @@ const FeatureHubScreen = ({ area, navigation }: FeatureHubScreenProps) => {
 
   const logsUsage = area === 'track' && appliances.length > 0;
   const primaryHint = logsUsage
-    ? 'Saves today’s energy snapshot for Trends and Reports'
+    ? 'Opens the daily log to confirm how long each device ran today'
     : `Opens ${PRIMARY_TARGET[area].title}`;
 
-  const handlePrimaryAction = async () => {
+  const handlePrimaryAction = () => {
     if (area === 'track') {
-      if (appliances.length === 0) {
-        navigation.navigate('AddAppliance');
-        return;
-      }
-      await saveUsageRecord();
-      Alert.alert('Usage logged', 'Today’s energy snapshot is ready in Trends and Reports.');
+      navigation.navigate(appliances.length === 0 ? 'AddAppliance' : 'DailyLog');
       return;
     }
 
@@ -266,7 +259,9 @@ const FeatureHubScreen = ({ area, navigation }: FeatureHubScreenProps) => {
         ))}
       </View>
 
-      <Text style={styles.footer}>SaveVolt keeps your local energy data private on this device.</Text>
+      <Text style={styles.footer}>
+        Your energy data stays on this device. The assistant only contacts Gemini if you add your own key, and cloud backup is optional.
+      </Text>
     </ScrollView>
   );
 };

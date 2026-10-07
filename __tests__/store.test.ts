@@ -79,14 +79,14 @@ const readStored = async <T,>(key: string): Promise<T | null> => {
 
 // Snapshot of the freshly created store (state + actions) used as a clean baseline
 const baseline = useEnergyStore.getState();
-const originalFetch = global.fetch;
+const originalFetch = globalThis.fetch;
 
 beforeEach(async () => {
   useEnergyStore.setState(baseline, true);
   await AsyncStorage.clear();
   jest.clearAllMocks();
   mockFetchWeather.mockImplementation(async (location: string) => weather(location));
-  global.fetch = jest.fn(() => Promise.reject(new Error('offline'))) as typeof fetch;
+  globalThis.fetch = jest.fn(() => Promise.reject(new Error('offline'))) as typeof fetch;
   jest.spyOn(console, 'warn').mockImplementation(() => {});
   jest.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -96,7 +96,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
-  global.fetch = originalFetch;
+  globalThis.fetch = originalFetch;
 });
 
 describe('energyStore.addAppliance', () => {
@@ -312,7 +312,7 @@ describe('energyStore.refreshWeatherData', () => {
 
     await useEnergyStore.getState().refreshWeatherData();
 
-    expect(global.fetch).toHaveBeenCalled();
+    expect(globalThis.fetch).toHaveBeenCalled();
     expect(useEnergyStore.getState().weatherData).toMatchObject({ location: 'Lima', source: 'fallback' });
     expect(useEnergyStore.getState().isWeatherLoading).toBe(false);
   });
@@ -336,7 +336,10 @@ describe('energyStore.updateSettings', () => {
 
     expect(mockFetchWeather).not.toHaveBeenCalled();
     expect(useEnergyStore.getState().settings).toMatchObject({ currency: '£', darkMode: true });
-    expect(await readStored<{ currency: string }>(KEYS.settings)).toMatchObject({ currency: '£', darkMode: true });
+    // Home settings stay with the home; device preferences such as dark mode are shared by every home
+    expect(await readStored<{ currency: string }>(KEYS.settings)).toMatchObject({ currency: '£' });
+    expect(await readStored<{ currency: string }>(KEYS.settings)).not.toHaveProperty('darkMode');
+    expect(await readStored<{ darkMode: boolean }>('@energy_app_device_settings')).toMatchObject({ darkMode: true });
   });
 });
 

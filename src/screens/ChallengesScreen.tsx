@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { format, addDays } from 'date-fns';
+import { useNavigation } from '@react-navigation/native';
 import { Typography, Spacing, Radius, Shadows } from '../theme';
 import { useEnergy } from '../context/EnergyContext';
 import { useTheme, useThemedStyles, ThemeColors } from '../context/ThemeContext';
@@ -17,6 +18,8 @@ import AccessibleTouchable from '../components/AccessibleTouchable';
 import EmptyState from '../components/EmptyState';
 import FocusAwareStatusBar from '../components/FocusAwareStatusBar';
 import { Challenge } from '../types';
+import { toast } from '../components/ui';
+import { challengeLastDay, dayKey, parseDayKey } from '../utils/analytics';
 
 type ChallengeType = Challenge['type'];
 
@@ -113,9 +116,18 @@ const ActiveChallengeCard = memo(function ActiveChallengeCard({
   const spokenUnit = getSpokenUnit(challenge.type);
   const progress = challenge.target > 0 ? (challenge.currentProgress / challenge.target) * 100 : 0;
   const progressClamped = Math.min(Math.max(progress, 0), 100);
-  const daysLeft = Math.ceil((new Date(challenge.endDate).getTime() - Date.now()) / MS_PER_DAY);
-  const isExpired = daysLeft < 0;
-  const timeLabel = isExpired ? 'Expired' : `${daysLeft} ${daysLeft === 1 ? 'day' : 'days'} left`;
+  const todayKey = dayKey(new Date());
+  const daysLeft = Math.round((parseDayKey(challengeLastDay(challenge)).getTime() - parseDayKey(todayKey).getTime()) / MS_PER_DAY);
+  const isExpired = challenge.status === 'failed' || daysLeft < 0;
+  const timeLabel = isExpired ? 'Missed' : daysLeft === 0 ? 'Last day' : `${daysLeft} ${daysLeft === 1 ? 'day' : 'days'} left`;
+  const isCustom = challenge.type === 'custom';
+  const checkedInToday = isCustom && (challenge.checkIns ?? []).includes(todayKey);
+  const actionLabel = isCustom ? (checkedInToday ? 'Checked in ✓' : 'Check in today') : 'Log today';
+  const howMeasured = isCustom
+    ? 'Check in once a day when you keep the habit.'
+    : challenge.type === 'streak'
+      ? 'Counts consecutive days you log in the Daily log.'
+      : 'Measured automatically from your daily logs vs your usual day.';
 
   return (
     <View style={s.challengeCard}>
@@ -134,6 +146,7 @@ const ActiveChallengeCard = memo(function ActiveChallengeCard({
       {challenge.description ? (
         <Text style={s.challengeDescription}>{challenge.description}</Text>
       ) : null}
+      <Text style={s.challengeDescription}>{howMeasured}</Text>
 
       <View
         style={s.targetBox}
@@ -185,12 +198,14 @@ const ActiveChallengeCard = memo(function ActiveChallengeCard({
           </AccessibleTouchable>
         ) : (
           <AccessibleTouchable
-            label={`Update progress for ${challenge.title}`}
-            hint={`Choose how many ${spokenUnit} to add`}
+            label={`${actionLabel}: ${challenge.title}`}
+            hint={isCustom ? 'Records today for this habit' : 'Opens the daily log, which updates this challenge'}
             onPress={() => onUpdate(challenge)}
+            disabled={checkedInToday}
+            accessibilityState={{ disabled: checkedInToday }}
           >
-            <LinearGradient colors={[colors.primary, colors.primaryDark]} style={s.updateButton}>
-              <Text style={s.updateButtonText}>+ Update</Text>
+            <LinearGradient colors={[colors.primary, colors.primaryDark]} style={[s.updateButton, checkedInToday && s.updateButtonDone]}>
+              <Text style={s.updateButtonText}>{actionLabel}</Text>
             </LinearGradient>
           </AccessibleTouchable>
         )}
@@ -210,7 +225,7 @@ const CompletedChallengeCard = memo(function CompletedChallengeCard({
   onRemove,
 }: ChallengeCardProps) {
   const s = useThemedStyles(createStyles);
-  const completedOn = format(new Date(challenge.endDate), 'MMM dd, yyyy');
+  const completedOn = format(new Date(challenge.completedAt ?? challenge.endDate), 'MMM dd, yyyy');
 
   return (
     <View style={[s.challengeCard, s.completedCard]}>
@@ -253,13 +268,13 @@ const CompletedChallengeCard = memo(function CompletedChallengeCard({
 });
 
 const ChallengesScreen = () => {
-  const { challenges, addChallenge, updateChallenge, completeChallenge, deleteChallenge } = useEnergy(
+  const { challenges, addChallenge, checkInChallenge, deleteChallenge } = useEnergy(
     'challenges',
     'addChallenge',
-    'updateChallenge',
-    'completeChallenge',
+    'checkInChallenge',
     'deleteChallenge',
   );
+  const navigation = useNavigation<{ navigate: (screen: string, params?: object) => void }>();
   const { colors, isDark } = useTheme();
   const s = useThemedStyles(createStyles);
   const [showModal, setShowModal] = useState(false);
@@ -295,53 +310,41 @@ const ChallengesScreen = () => {
 
     const now = new Date();
 
-    await addChallenge({
-      title: title.trim(),
-      description: description.trim(),
-      type,
-      target: targetValue,
-      duration: durationDays,
-      startDate: now.toISOString(),
-      endDate: addDays(now, durationDays).toISOString(),
-      createdBy: 'self',
-      reward: `${durationDays}-day ${type} challenge badge`,
-    });
+    try {
+      await addChallenge({
+        title: title.trim(),
+        description: description.trim(),
+        type,
+        target: targetValue,
+        duration: durationDays,
+        startDate: now.toISOString(),
+        endDate: addDays(now, durationDays).toISOString(),
+        createdBy: 'self',
+        reward: `${durationDays}-day ${type} challenge badge`,
+      });
+    } catch (error) {
+      Alert.alert('Check your challenge', error instanceof Error ? error.message : 'Could not create the challenge.');
+      return;
+    }
 
     setShowModal(false);
     resetForm();
-    Alert.alert('Success', 'Challenge created! Track your progress below.');
+    toast.success(type === 'custom'
+      ? 'Challenge created. Check in each day you keep the habit.'
+      : 'Challenge created. It updates automatically from your daily logs.');
   };
 
-  const handleProgressUpdate = useCallback(
-    (challenge: Challenge, amount: number) => {
-      const newProgress = Math.min(challenge.currentProgress + amount, challenge.target);
-
-      updateChallenge(challenge.id, {
-        currentProgress: newProgress,
-      });
-
-      if (newProgress >= challenge.target && !challenge.isCompleted) {
-        completeChallenge(challenge.id);
-        Alert.alert(
-          '🎉 Challenge Completed!',
-          `Congratulations! You've completed "${challenge.title}"!\n\nReward: ${challenge.reward || 'Achievement unlocked!'}`,
-        );
-      }
-    },
-    [updateChallenge, completeChallenge],
-  );
-
-  const promptProgressUpdate = useCallback(
+  const handleChallengeAction = useCallback(
     (challenge: Challenge) => {
-      const unit = getChallengeUnit(challenge.type);
-      Alert.alert('Update Progress', `How much progress? (${unit})`, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: `+1 ${unit}`, onPress: () => handleProgressUpdate(challenge, 1) },
-        { text: `+5 ${unit}`, onPress: () => handleProgressUpdate(challenge, 5) },
-        { text: `+10 ${unit}`, onPress: () => handleProgressUpdate(challenge, 10) },
-      ]);
+      if (challenge.type !== 'custom') {
+        navigation.navigate('Track', { screen: 'DailyLog', initial: false });
+        return;
+      }
+      checkInChallenge(challenge.id)
+        .then(() => toast.reward(`Checked in: ${challenge.title}. +5 pts`))
+        .catch((error: unknown) => toast.error(error instanceof Error ? error.message : 'Could not check in.'));
     },
-    [handleProgressUpdate],
+    [checkInChallenge, navigation],
   );
 
   const confirmRemove = useCallback(
@@ -395,7 +398,7 @@ const ChallengesScreen = () => {
               <ActiveChallengeCard
                 key={challenge.id}
                 challenge={challenge}
-                onUpdate={promptProgressUpdate}
+                onUpdate={handleChallengeAction}
                 onRemove={confirmRemove}
               />
             ))}
@@ -771,6 +774,7 @@ const createStyles = (c: ThemeColors) => {
     timeExpiredText: {
       color: c.dangerText,
     },
+    updateButtonDone: { opacity: 0.55 },
     updateButton: {
       paddingHorizontal: Spacing.page,
       paddingVertical: Spacing.sm,

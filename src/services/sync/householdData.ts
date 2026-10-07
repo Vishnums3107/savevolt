@@ -79,6 +79,43 @@ export const validateHouseholdData = (value: unknown): HouseholdData => {
     settings: { electricityRate: settings.electricityRate as number, co2Factor: settings.co2Factor as number,
       currency: settings.currency as string, weatherLocation: settings.weatherLocation as string },
   };
+
+  // Newer, optional sections: validated when present so older backups still restore.
+  if (value.meterReadings !== undefined) {
+    result.meterReadings = array(value.meterReadings, item => identified(item) && date(item.takenAt) &&
+      number(item.value) && (item.note === undefined || text(item.note)), 'meter readings');
+  }
+  if (value.points !== undefined) {
+    const points = value.points;
+    if (!object(points) || !number(points.total) || !Array.isArray(points.events) || points.events.length > 1000 ||
+        !points.events.every(e => identified(e) && date(e.date) && typeof e.points === 'number' && Number.isFinite(e.points) &&
+          text(e.reason) && text(e.key))) {
+      throw new Error('Invalid points in the household backup.');
+    }
+    result.points = { total: points.total as number, events: points.events as NonNullable<HouseholdData['points']>['events'] };
+  }
+  if (value.insightState !== undefined) {
+    const state = value.insightState;
+    const dates = (map: unknown) => object(map) && Object.keys(map).length <= 5000 && Object.values(map).every(date);
+    if (!object(state) || !dates(state.dismissed) || !dates(state.done) || !dates(state.saved) || !object(state.undo)) {
+      throw new Error('Invalid tip history in the household backup.');
+    }
+    const undo = Object.fromEntries(Object.entries(state.undo).filter(([, entry]) => object(entry) &&
+      id(entry.applianceId) && applianceIds.has(entry.applianceId as string) && object(entry.before) &&
+      date(entry.appliedAt) && typeof entry.savingsKwh === 'number'));
+    result.insightState = { dismissed: state.dismissed as Record<string, string>, done: state.done as Record<string, string>,
+      saved: state.saved as Record<string, string>, undo: undo as NonNullable<HouseholdData['insightState']>['undo'] };
+  }
+  if (value.certificates !== undefined) {
+    result.certificates = array(value.certificates, item => identified(item) && date(item.issuedAt) &&
+      date(item.periodStart) && date(item.periodEnd) && [item.kWhSaved, item.co2AvoidedKg, item.moneySaved, item.daysCounted].every(number) &&
+      typeof item.previousHash === 'string' && /^[0-9a-f]{64}$/.test(item.previousHash) &&
+      typeof item.hash === 'string' && /^[0-9a-f]{64}$/.test(item.hash), 'certificates');
+  }
+  if (value.bills !== undefined) {
+    result.bills = array(value.bills, item => identified(item) && date(item.periodStart) && date(item.periodEnd) &&
+      number(item.kWh) && number(item.amount) && date(item.createdAt), 'bills');
+  }
   // Return a detached copy so callers cannot mutate the validated backup later.
   return JSON.parse(JSON.stringify(result)) as HouseholdData;
 };

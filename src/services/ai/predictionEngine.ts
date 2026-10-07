@@ -2,142 +2,67 @@ import { Appliance, ApplianceCategory, EnergyTip, WeatherData } from '../../type
 import { calculateEnergyConsumptions } from '../../utils/energy';
 
 /**
- * PredictionEngine handles generating smart, predictive recommendations
- * by combining historical usage data, appliance types, and contextual
- * factors like weather and simultaneous peak load.
+ * Load-pattern rules on top of the per-appliance tips: the single biggest cost, simultaneous
+ * peak load, and always-on devices. Ids are stable so user actions on them persist.
  */
 export class PredictionEngine {
-  /**
-   * Generates proactive recommendations based on current context.
-   */
   public static generatePredictiveTips(
     appliances: Appliance[],
-    weather: WeatherData | null,
+    _weather: WeatherData | null,
     electricityRate: number,
-    co2Factor: number
+    co2Factor: number,
+    currency = '$',
   ): EnergyTip[] {
     const tips: EnergyTip[] = [];
     const consumptions = calculateEnergyConsumptions(appliances, electricityRate, co2Factor);
+    const total = consumptions.reduce((sum, c) => sum + c.monthlyConsumption, 0);
 
-    // Context: Weather
-    if (weather) {
-      if (weather.temperature < 15) {
-        tips.push({
-          id: `pred-weather-cold-${Date.now()}`,
-          title: 'Predictive Heating Advice',
-          description: `Temperatures are dropping to ${weather.temperature}°C. Consider setting a smart schedule for your heater to turn on only before you arrive home, rather than leaving it on all day.`,
-          category: 'General',
-          priority: 'high',
-          potentialSavings: 50,
-          isPersonalized: true,
-        });
-      } else if (weather.temperature > 28) {
-        tips.push({
-          id: `pred-weather-hot-${Date.now()}`,
-          title: 'Predictive Cooling Advice',
-          description: `It's going to be hot (${weather.temperature}°C). Pre-cool your home during off-peak hours and close blinds during peak afternoon sun to reduce AC workload.`,
-          category: 'General',
-          priority: 'high',
-          potentialSavings: 60,
-          isPersonalized: true,
-        });
-      } else if (weather.temperature >= 18 && weather.temperature <= 25 && weather.humidity < 65) {
-        tips.push({
-          id: `pred-weather-mild-${Date.now()}`,
-          title: 'Optimal Natural Ventilation',
-          description: `Mild outdoor weather (${weather.temperature}°C, ${weather.humidity}% humidity) means you can open windows for cross-breeze and turn off both AC and heating to save 100% on climate control today.`,
-          category: ApplianceCategory.COOLING,
-          priority: 'medium',
-          potentialSavings: 45,
-          isPersonalized: true,
-        });
-      }
-
-      // High humidity load strain
-      if (weather.humidity > 75 && weather.temperature >= 24) {
-        tips.push({
-          id: `pred-weather-humid-${Date.now()}`,
-          title: 'Humidity Dehumidification Mode',
-          description: `High outdoor humidity (${weather.humidity}%) makes air feel hotter and forces compressors to work harder. Run your AC on Dry/Dehumidifier mode to maintain comfort with ~30% less power.`,
-          category: ApplianceCategory.COOLING,
-          priority: 'medium',
-          potentialSavings: 35,
-          isPersonalized: true,
-        });
-      }
-    }
-
-    // Context: High energy consumers
-    const highConsumers = consumptions.filter((c) => c.dailyConsumption > 5);
-    if (highConsumers.length > 0) {
-      const worstOffender = highConsumers.sort((a, b) => b.dailyConsumption - a.dailyConsumption)[0];
+    // The single biggest cost when it dominates the bill
+    const worst = [...consumptions].sort((a, b) => b.monthlyConsumption - a.monthlyConsumption)[0];
+    if (worst && worst.dailyConsumption > 3 && total > 0 && worst.monthlyConsumption / total >= 0.3) {
       tips.push({
-        id: `pred-appliance-${Date.now()}`,
-        title: `Optimize ${worstOffender.applianceName}`,
-        description: `Based on your usage, ${worstOffender.applianceName} is costing you ~$${(worstOffender.monthlyConsumption * electricityRate).toFixed(2)}/month. Consider upgrading to a more efficient model or reducing its active hours by 20%.`,
+        id: `pred:dominant:${worst.applianceId}`,
+        title: `${worst.applianceName} is ${Math.round((worst.monthlyConsumption / total) * 100)}% of your bill`,
+        description: `It costs about ${currency}${(worst.monthlyConsumption * electricityRate).toFixed(2)} a month. Using it 20% less would save ${currency}${(worst.monthlyConsumption * electricityRate * 0.2).toFixed(2)}, more than any other single change.`,
         category: 'General',
         priority: 'high',
-        potentialSavings: worstOffender.monthlyConsumption * 0.2,
+        potentialSavings: worst.monthlyConsumption * 0.2,
         isPersonalized: true,
       });
     }
 
-    // Context: Peak Simultaneous Wattage Surge
-    const totalActiveWatts = appliances
-      .filter((a) => a.isActive)
-      .reduce((sum, a) => sum + a.powerRating * (a.quantity || 1), 0);
-
-    if (totalActiveWatts > 3500) {
+    // Many heavy devices switched on together
+    const heavy = appliances.filter((a) => a.isActive && a.powerRating * a.quantity >= 1000);
+    const peakWatts = heavy.reduce((sum, a) => sum + a.powerRating * a.quantity, 0);
+    if (heavy.length >= 2 && peakWatts > 3500) {
       tips.push({
-        id: `pred-peak-surge-${Date.now()}`,
-        title: 'High Simultaneous Load Detected',
-        description: `Your active appliances are drawing a combined ${(totalActiveWatts / 1000).toFixed(1)} kW. Running heavy appliances concurrently may push your household into higher tariff tiers. Stagger usage across the day.`,
+        id: 'pred:peak-stagger',
+        title: `Stagger heavy loads (${(peakWatts / 1000).toFixed(1)} kW together)`,
+        description: `${heavy.map((a) => a.name).join(', ')} can all run at once. Spreading them out avoids demand peaks and, on time-of-use tariffs, lets you move them to cheaper hours.`,
         category: 'General',
-        priority: 'high',
-        potentialSavings: 40,
+        priority: 'medium',
+        potentialSavings: heavy.reduce((sum, a) => sum + (a.powerRating * a.quantity * Math.min(a.hoursPerDay, 1) * 30) / 1000, 0) * 0.1,
         isPersonalized: true,
       });
     }
 
-    // Context: Phantom / Standby Load
-    const standbyCandidates = appliances.filter(
-      (a) =>
-        a.isActive &&
-        a.hoursPerDay >= 16 &&
-        [ApplianceCategory.ENTERTAINMENT, ApplianceCategory.OFFICE, ApplianceCategory.OTHER].includes(
-          a.category
-        )
-    );
-
-    if (standbyCandidates.length > 0) {
-      const phantomKwh = standbyCandidates.reduce(
-        (sum, a) => sum + (a.powerRating * (a.hoursPerDay - 6) * 30) / 1000,
-        0
-      );
-      if (phantomKwh > 10) {
+    // Electronics left on most of the day
+    const alwaysOn = appliances.filter((a) =>
+      a.isActive && a.hoursPerDay >= 16 && a.hoursPerDay < 24 &&
+      [ApplianceCategory.ENTERTAINMENT, ApplianceCategory.OFFICE, ApplianceCategory.OTHER].includes(a.category));
+    if (alwaysOn.length > 0) {
+      const idleKwh = alwaysOn.reduce((sum, a) => sum + (a.powerRating * a.quantity * (a.hoursPerDay - 8) * 30) / 1000, 0);
+      if (idleKwh > 5) {
         tips.push({
-          id: `pred-phantom-${Date.now()}`,
-          title: 'Phantom Standby Drain Alert',
-          description: `${standbyCandidates.length} connected media/office devices run continuously, generating an estimated ${phantomKwh.toFixed(1)} kWh/mo in idle standby. Using smart power strips can eliminate this cost.`,
+          id: 'pred:always-on',
+          title: `${alwaysOn.length} device${alwaysOn.length > 1 ? 's' : ''} on 16+ hours a day`,
+          description: `${alwaysOn.map((a) => a.name).join(', ')} probably sit idle for much of that time, about ${idleKwh.toFixed(1)} kWh a month. A smart plug schedule could switch them off overnight.`,
           category: ApplianceCategory.OTHER,
           priority: 'medium',
-          potentialSavings: phantomKwh * 0.7,
+          potentialSavings: idleKwh * 0.6,
           isPersonalized: true,
         });
       }
-    }
-
-    // Context: Empty state prediction
-    if (appliances.length === 0) {
-      tips.push({
-        id: `pred-empty-${Date.now()}`,
-        title: 'Start Tracking',
-        description: 'Add your first appliance or load Demo Data to start receiving personalized predictive recommendations.',
-        category: 'General',
-        priority: 'low',
-        potentialSavings: 0,
-        isPersonalized: false,
-      });
     }
 
     return tips;

@@ -17,7 +17,9 @@ import FocusAwareStatusBar from '../components/FocusAwareStatusBar';
 import { formatEnergy, formatCost, formatCO2 } from '../utils/energy';
 import { format, parseISO } from 'date-fns';
 import ViewShot from 'react-native-view-shot';
-import BlockchainService, { CarbonCredit } from '../services/BlockchainService';
+import { dayKey } from '../utils/analytics';
+import { draftCertificate, verifyCertificateChain } from '../utils/certificates';
+import { toast } from '../components/ui';
 
 interface ImpactVisualizerScreenProps {
   navigation: { navigate: (screen: string, params?: object) => void };
@@ -40,6 +42,9 @@ const ImpactVisualizerScreen = ({ navigation }: ImpactVisualizerScreenProps) => 
     activeTimers,
     addCountdownTimer,
     updateTimer,
+    usageRecords,
+    certificates,
+    issueSavingsCertificate,
   } = useEnergy(
     'dashboardData',
     'settings',
@@ -51,39 +56,33 @@ const ImpactVisualizerScreen = ({ navigation }: ImpactVisualizerScreenProps) => 
     'activeTimers',
     'addCountdownTimer',
     'updateTimer',
+    'usageRecords',
+    'certificates',
+    'issueSavingsCertificate',
   );
   const { colors } = useTheme();
   const s = useThemedStyles(createStyles);
 
-  const [carbonCredits, setCarbonCredits] = useState<CarbonCredit[]>([]);
-  const [isMinting, setIsMinting] = useState(false);
+  const [isIssuing, setIsIssuing] = useState(false);
 
-  useEffect(() => {
-    BlockchainService.initialize().then(() => {
-      setCarbonCredits(BlockchainService.getCarbonCredits());
-    });
-  }, []);
+  // Measured savings that are not on a certificate yet (up to yesterday)
+  const pendingCertificate = useMemo(
+    () => draftCertificate(usageRecords, certificates, settings, dayKey(new Date())),
+    [usageRecords, certificates, settings],
+  );
+  const chain = useMemo(() => verifyCertificateChain(certificates), [certificates]);
+  const certifiedKwh = useMemo(() => certificates.reduce((sum, c) => sum + c.kWhSaved, 0), [certificates]);
+  const certifiedCo2 = useMemo(() => certificates.reduce((sum, c) => sum + c.co2AvoidedKg, 0), [certificates]);
 
-  const handleMintCertificate = async () => {
-    if (!dashboardData || dashboardData.totalCO2Saved <= 0) {
-      Alert.alert('No CO2 Offset Recorded', 'Reduce consumption or track appliances first to mint verified carbon certificates.');
-      return;
-    }
-    setIsMinting(true);
+  const handleIssueCertificate = async () => {
+    setIsIssuing(true);
     try {
-      const credit = await BlockchainService.mintCarbonCredit(
-        dashboardData.totalCO2Saved,
-        dashboardData.totalEnergyConsumed
-      );
-      setCarbonCredits(BlockchainService.getCarbonCredits());
-      Alert.alert(
-        '🌱 Certificate Minted!',
-        `Verified Green Energy Certificate #${credit.tokenId.slice(-6)} issued for ${credit.amount.toFixed(1)} kg CO2 avoided.`
-      );
-    } catch {
-      Alert.alert('Minting Error', 'Could not mint certificate at this time. Please try again.');
+      const certificate = await issueSavingsCertificate();
+      toast.success(`Certificate issued for ${formatEnergy(certificate.kWhSaved)} over ${certificate.daysCounted} measured days.`);
+    } catch (error) {
+      Alert.alert('Nothing to certify yet', error instanceof Error ? error.message : 'Could not issue a certificate.');
     } finally {
-      setIsMinting(false);
+      setIsIssuing(false);
     }
   };
 
@@ -381,66 +380,71 @@ const ImpactVisualizerScreen = ({ navigation }: ImpactVisualizerScreenProps) => 
         )}
       </View>
 
-      {/* On-Chain Carbon Offsets & Certificates */}
+      {/* Savings certificates: a local, tamper-evident (SHA-256 hash-chained) ledger */}
       <View style={s.blockchainSection}>
         <View style={s.sectionHeader}>
-          <Text style={s.sectionTitle} accessibilityRole="header">Green Certificates</Text>
+          <Text style={s.sectionTitle} accessibilityRole="header">Savings Certificates</Text>
           <View style={s.networkBadge}>
-            <Text style={s.networkBadgeText}>Polygon Web3</Text>
+            <Text style={s.networkBadgeText}>{chain.valid ? 'Chain verified' : 'Chain broken'}</Text>
           </View>
         </View>
 
         <View style={s.blockchainCard}>
-          <Text style={s.blockchainTitle}>Tokenized Carbon Credits</Text>
+          <Text style={s.blockchainTitle}>Certify your measured savings</Text>
           <Text style={s.blockchainSubtitle}>
-            Convert your real CO₂ savings into verifiable on-chain certificates and carbon offset tokens.
+            Each certificate covers measured days (logs and meter readings) since the last one. Certificates are
+            linked by SHA-256 hashes on this device, so editing or removing one is detectable.
           </Text>
 
           <View style={s.blockchainStatsRow}>
             <View style={s.blockchainStat}>
-              <Text style={s.blockchainStatLabel}>Offset</Text>
-              <Text style={s.blockchainStatVal}>{dashboardData ? `${dashboardData.totalCO2Saved.toFixed(1)} kg` : '0 kg'}</Text>
+              <Text style={s.blockchainStatLabel}>Ready</Text>
+              <Text style={s.blockchainStatVal}>{formatEnergy(pendingCertificate?.kWhSaved ?? 0)}</Text>
             </View>
             <View style={s.blockchainStat}>
-              <Text style={s.blockchainStatLabel}>Certificates</Text>
-              <Text style={s.blockchainStatVal}>{carbonCredits.length}</Text>
+              <Text style={s.blockchainStatLabel}>Certified</Text>
+              <Text style={s.blockchainStatVal}>{formatEnergy(certifiedKwh)}</Text>
             </View>
             <View style={s.blockchainStat}>
-              <Text style={s.blockchainStatLabel}>Est. Value</Text>
-              <Text style={s.blockchainStatVal}>
-                ${(carbonCredits.reduce((acc, c) => acc + c.marketValue, 0)).toFixed(2)}
-              </Text>
+              <Text style={s.blockchainStatLabel}>CO₂ avoided</Text>
+              <Text style={s.blockchainStatVal}>{formatCO2(certifiedCo2)}</Text>
             </View>
           </View>
 
           <AccessibleTouchable
-            label="Mint Carbon Certificate"
-            hint="Mints a verifiable green energy certificate for your saved carbon"
+            label="Issue savings certificate"
+            hint="Certifies measured savings since your last certificate"
             style={s.mintBtn}
-            disabled={isMinting || !dashboardData || dashboardData.totalCO2Saved <= 0}
-            onPress={handleMintCertificate}
+            disabled={isIssuing || !pendingCertificate}
+            onPress={handleIssueCertificate}
           >
             <LinearGradient
-              colors={['#10B981', '#059669']}
+              colors={pendingCertificate ? [colors.success, colors.primaryDark] : [colors.textMuted, colors.textMuted]}
               style={s.mintBtnGradient}
             >
               <Text style={s.mintBtnText}>
-                {isMinting ? 'Minting on Chain…' : '🌱 Mint Carbon Certificate'}
+                {isIssuing
+                  ? 'Issuing…'
+                  : pendingCertificate
+                    ? `🌱 Certify ${pendingCertificate.daysCounted} measured ${pendingCertificate.daysCounted === 1 ? 'day' : 'days'}`
+                    : 'Log days below your usual use to certify'}
               </Text>
             </LinearGradient>
           </AccessibleTouchable>
 
-          {carbonCredits.length > 0 && (
+          {certificates.length > 0 && (
             <View style={s.certificatesList}>
-              <Text style={s.certificatesHeading}>Issued Certificates ({carbonCredits.length})</Text>
-              {carbonCredits.slice(-3).reverse().map((c) => (
+              <Text style={s.certificatesHeading}>Issued Certificates ({certificates.length})</Text>
+              {certificates.slice(-3).reverse().map((c) => (
                 <View key={c.id} style={s.certificateRow}>
                   <View style={s.certInfo}>
-                    <Text style={s.certTitle}>NFT #{c.tokenId.slice(-6)} • {c.amount.toFixed(1)} kg CO₂</Text>
-                    <Text style={s.certTx}>Tx: {c.transactionHash ? c.transactionHash.slice(0, 16) + '…' : 'Verified'}</Text>
+                    <Text style={s.certTitle}>
+                      {formatEnergy(c.kWhSaved)} • {formatCO2(c.co2AvoidedKg)} • {format(parseISO(c.periodStart), 'd MMM')}–{format(parseISO(c.periodEnd), 'd MMM')}
+                    </Text>
+                    <Text style={s.certTx}>Hash: {c.hash.slice(0, 16)}…</Text>
                   </View>
                   <View style={s.certBadge}>
-                    <Text style={s.certBadgeText}>VERIFIED</Text>
+                    <Text style={s.certBadgeText}>{chain.valid ? 'VERIFIED' : 'CHECK'}</Text>
                   </View>
                 </View>
               ))}

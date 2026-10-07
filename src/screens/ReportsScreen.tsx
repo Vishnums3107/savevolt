@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AccessibilityInfo, ActivityIndicator, View, Text, StyleSheet, ScrollView, Alert, Platform,
+  ActivityIndicator, View, Text, StyleSheet, ScrollView, Alert, Platform,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { NavigationProp, ParamListBase, useNavigation } from '@react-navigation/native';
@@ -78,9 +78,9 @@ const buildCSV = (appliances: Appliance[], dashboardData: DashboardData | null, 
 
 const ReportsScreen = () => {
   const {
-    dashboardData, appliances, usageRecords, settings, streak, tips, goals, saveUsageRecord,
+    dashboardData, appliances, usageRecords, settings, streak, tips, goals,
   } = useEnergy(
-    'dashboardData', 'appliances', 'usageRecords', 'settings', 'streak', 'tips', 'goals', 'saveUsageRecord',
+    'dashboardData', 'appliances', 'usageRecords', 'settings', 'streak', 'tips', 'goals',
   );
   const { colors } = useTheme();
   const s = useThemedStyles(createStyles);
@@ -157,11 +157,10 @@ const ReportsScreen = () => {
     [generateTextReport],
   );
 
+  // Logging happens in the daily log, where the user confirms how long each device ran
   const handleLogUsage = useCallback(() => {
-    saveUsageRecord()
-      .then(() => AccessibilityInfo.announceForAccessibility('Today’s usage logged'))
-      .catch((error: unknown) => console.error('Failed to log usage:', error));
-  }, [saveUsageRecord]);
+    navigation.navigate('Track', { screen: 'DailyLog', initial: false });
+  }, [navigation]);
 
   const openAddAppliance = useCallback(() => {
     navigation.navigate('Track', { screen: 'AddAppliance', initial: false });

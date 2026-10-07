@@ -14,7 +14,7 @@ export class MockSmartPlugService implements IHardwareService {
   }
 
   public async connect(_credentials?: unknown): Promise<boolean> {
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await new Promise<void>((resolve) => setTimeout(resolve, 300));
 
     this.devices = {
       'plug-001': {

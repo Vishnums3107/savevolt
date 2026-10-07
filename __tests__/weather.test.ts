@@ -1,10 +1,10 @@
 import { fetchWeatherData, getSeason } from '../src/services/api/weatherApi';
 
 describe('weather utilities', () => {
-  const originalFetch = global.fetch;
+  const originalFetch = globalThis.fetch;
 
   afterEach(() => {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
     jest.restoreAllMocks();
   });
 
@@ -18,7 +18,7 @@ describe('weather utilities', () => {
         ok: true,
         json: async () => ({ current: { temperature_2m: 27.6, relative_humidity_2m: 64.2, weather_code: 2 } }),
       });
-    global.fetch = fetchMock as unknown as typeof fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     await expect(fetchWeatherData('Bengaluru')).resolves.toEqual({
       temperature: 28,
@@ -31,7 +31,7 @@ describe('weather utilities', () => {
   });
 
   it('returns a clearly labelled seasonal fallback when live weather is unavailable', async () => {
-    global.fetch = jest.fn().mockRejectedValue(new Error('offline')) as unknown as typeof fetch;
+    globalThis.fetch = jest.fn().mockRejectedValue(new Error('offline')) as unknown as typeof fetch;
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     const result = await fetchWeatherData('Pune');

@@ -34,7 +34,7 @@ import VoiceCommandService, {
 } from '../services/VoiceCommandService';
 import { Radius, Shadows, Spacing, Typography } from '../theme';
 import { ChatMessage } from '../types';
-import { generateChatbotResponse } from '../utils/tips';
+import { generateChatbotResponse } from '../services/assistant/localAssistant';
 import { speak, stopSpeaking } from '../utils/voice';
 
 interface ChatScreenProps {

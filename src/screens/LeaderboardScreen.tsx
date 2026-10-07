@@ -1,519 +1,222 @@
 /**
- * Social Leaderboard Screen
- * Shows global and friends rankings with achievements
+ * Leaderboard: you and the friends whose SaveVolt score codes you imported. There is no server,
+ * so every number is either computed from your own data or came from a friend's code.
  */
-
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  Image,
-  RefreshControl,
-} from 'react-native';
-import LinearGradient from 'react-native-linear-gradient';
-import { Typography, Spacing, Radius, Shadows } from '../theme';
-import { useTheme, useThemedStyles, ThemeColors } from '../context/ThemeContext';
-import AccessibleTouchable from '../components/AccessibleTouchable';
-import EmptyState from '../components/EmptyState';
-import FocusAwareStatusBar from '../components/FocusAwareStatusBar';
-import { SkeletonCard } from '../components/Skeleton';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert, Share, StyleSheet, Text, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { formatDistanceToNow } from 'date-fns';
+import { useEnergy } from '../context/EnergyContext';
+import { ThemeColors, useTheme, useThemedStyles } from '../context/ThemeContext';
+import { Radius, Spacing, Typography } from '../theme';
+import {
+  Button, Card, Chip, GlassPanel, HeroHeader, IconBubble, Screen, SectionHeader, TextField, toast,
+} from '../components/ui';
+import AccessibleTouchable from '../components/AccessibleTouchable';
 
-export interface LeaderboardEntry {
-  id: string;
-  userId: string;
-  username: string;
-  avatar: string;
-  totalSavings: number; // kWh
-  co2Offset: number; // kg
-  rank: number;
-  weeklyRank: number;
-  monthlyRank: number;
-  streak: number;
-  achievements: number;
-  joinedDate: string;
-  isFriend: boolean;
-}
+type Metric = 'points' | 'week' | 'percent' | 'streak';
 
-type LeaderboardTab = 'all' | 'friends' | 'weekly' | 'monthly';
-
-const TABS: { key: LeaderboardTab; icon: string; label: string; hint: string }[] = [
-  { key: 'all', icon: '🌍', label: 'Global', hint: 'Shows all-time rankings for everyone' },
-  { key: 'friends', icon: '👥', label: 'Friends', hint: 'Shows rankings for your friends only' },
-  { key: 'weekly', icon: '📅', label: 'Weekly', hint: 'Shows this week\'s rankings' },
-  { key: 'monthly', icon: '📆', label: 'Monthly', hint: 'Shows this month\'s rankings' },
+const METRICS: { key: Metric; label: string; icon: string }[] = [
+  { key: 'points', label: 'Points', icon: 'star-four-points-outline' },
+  { key: 'week', label: 'Saved this week', icon: 'lightning-bolt-outline' },
+  { key: 'percent', label: '% below usual', icon: 'trending-down' },
+  { key: 'streak', label: 'Streak', icon: 'fire' },
 ];
 
-const STORAGE_KEY = 'leaderboard_data';
-const CURRENT_USER_ID = 'current_user';
+interface Row {
+  id: string;
+  name: string;
+  isMe: boolean;
+  points: number;
+  level: number;
+  week: number;
+  percent: number;
+  streak: number;
+  badges: number;
+  updated?: string;
+}
 
-const generateSampleLeaderboard = (): LeaderboardEntry[] => {
-  const names = [
-    'You', 'Sarah Chen', 'Mike Johnson', 'Emma Davis', 'Alex Brown',
-    'Lisa Wang', 'Tom Wilson', 'Anna Lee', 'Chris Martin', 'Maya Patel',
-    'John Smith', 'Kate Taylor', 'Ryan Clark', 'Sophie Moore', 'Dan White',
-  ];
+const metricValue = (row: Row, metric: Metric) =>
+  metric === 'points' ? row.points : metric === 'week' ? row.week : metric === 'percent' ? row.percent : row.streak;
 
-  return names.map((name, index) => ({
-    id: `user-${index}`,
-    userId: index === 0 ? CURRENT_USER_ID : `user-${index}`,
-    username: name,
-    avatar: `https://api.dicebear.com/7.x/avataaars/png?seed=${name}`,
-    totalSavings: Math.max(100, 2000 - index * 100 - Math.random() * 50),
-    co2Offset: Math.max(50, 1000 - index * 50 - Math.random() * 25),
-    rank: index + 1,
-    weeklyRank: Math.floor(Math.random() * 50) + 1,
-    monthlyRank: Math.floor(Math.random() * 100) + 1,
-    streak: Math.floor(Math.random() * 90) + 1,
-    achievements: Math.floor(Math.random() * 20) + 1,
-    joinedDate: new Date(new Date().getFullYear(), Math.floor(Math.random() * 12), Math.floor(Math.random() * 28) + 1).toISOString(),
-    isFriend: index > 0 && Math.random() > 0.6,
-  }));
+const formatMetric = (row: Row, metric: Metric) => {
+  switch (metric) {
+    case 'points': return `${row.points} pts`;
+    case 'week': return `${row.week.toFixed(1)} kWh`;
+    case 'percent': return `${row.percent > 0 ? '−' : row.percent < 0 ? '+' : ''}${Math.abs(row.percent).toFixed(1)}%`;
+    default: return `${row.streak} d`;
+  }
 };
 
-const rankFor = (entry: LeaderboardEntry, tab: LeaderboardTab): number => {
-  if (tab === 'weekly') return entry.weeklyRank;
-  if (tab === 'monthly') return entry.monthlyRank;
-  return entry.rank;
-};
+const MEDALS = ['🥇', '🥈', '🥉'];
 
-const getRankEmoji = (rank: number): string => {
-  if (rank === 1) return '🥇';
-  if (rank === 2) return '🥈';
-  if (rank === 3) return '🥉';
-  return `#${rank}`;
-};
-
-const LeaderboardScreen: React.FC = () => {
-  const { colors } = useTheme();
+const LeaderboardScreen = () => {
+  const { friends, points, usageRecords, streak, badges, settings, getScoreSummary, getScoreCode, importShareCode, removeFriend } = useEnergy(
+    'friends', 'points', 'usageRecords', 'streak', 'badges', 'settings', 'getScoreSummary', 'getScoreCode', 'importShareCode', 'removeFriend',
+  );
   const s = useThemedStyles(createStyles);
-  const [activeTab, setActiveTab] = useState<LeaderboardTab>('all');
-  const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
-  const [isLoaded, setIsLoaded] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
+  const { colors } = useTheme();
+  const [metric, setMetric] = useState<Metric>('points');
+  const [code, setCode] = useState('');
+  const [importing, setImporting] = useState(false);
 
-  const loadLeaderboard = useCallback(async () => {
-    try {
-      // Load or generate leaderboard data
-      const stored = await AsyncStorage.getItem(STORAGE_KEY);
-      let data: LeaderboardEntry[] = stored ? JSON.parse(stored) : [];
-
-      if (data.length === 0) {
-        data = generateSampleLeaderboard();
-        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      }
-
-      setEntries(data);
-    } catch (error) {
-      console.error('Failed to load leaderboard:', error);
-    } finally {
-      setIsLoaded(true);
-    }
+  // The first release stored a generated sample leaderboard; it is no longer used
+  useEffect(() => {
+    AsyncStorage.removeItem('leaderboard_data').catch(() => {});
   }, []);
 
-  useEffect(() => {
-    loadLeaderboard();
-  }, [loadLeaderboard]);
+  const me = useMemo(() => getScoreSummary(),
+    // Recompute when anything the score depends on changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [getScoreSummary, points, usageRecords, streak, badges, settings.displayName]);
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await loadLeaderboard();
-    setRefreshing(false);
-  }, [loadLeaderboard]);
+  const rows = useMemo<Row[]>(() => {
+    const list: Row[] = [
+      { id: 'me', name: me.name, isMe: true, points: me.points, level: me.level, week: me.weekSavedKwh,
+        percent: me.savingsPercent, streak: me.streak, badges: me.badges },
+      ...friends.map((f) => ({
+        id: f.id, name: f.name, isMe: false, points: f.points, level: f.level, week: f.weekSavedKwh,
+        percent: f.savingsPercent, streak: f.streak, badges: f.badges, updated: f.generatedAt,
+      })),
+    ];
+    return list.sort((a, b) => metricValue(b, metric) - metricValue(a, metric));
+  }, [friends, me, metric]);
 
-  // Filter and rank for the active tab; sorts a copy so stored entries keep their order.
-  const rows = useMemo(() => {
-    const visible = activeTab === 'friends' ? entries.filter((entry) => entry.isFriend) : entries;
-    return visible
-      .map((entry) => ({ entry, rank: rankFor(entry, activeTab) }))
-      .sort((a, b) => a.rank - b.rank)
-      .map(({ entry, rank }) => {
-        const isCurrentUser = entry.userId === CURRENT_USER_ID;
-        // The sample data already names the current user "You"; don't render "You (You)".
-        const isNamedYou = entry.username === 'You';
-        const savings = entry.totalSavings.toFixed(0);
-        const co2 = entry.co2Offset.toFixed(0);
-        const spokenName = isCurrentUser && !isNamedYou ? `${entry.username}, you` : entry.username;
-        return {
-          entry,
-          rank,
-          isCurrentUser,
-          savings,
-          co2,
-          displayName: isCurrentUser && !isNamedYou ? `${entry.username} (You)` : entry.username,
-          label:
-            `Rank ${rank}, ${spokenName}, ${savings} kWh saved, ${co2} kg CO2 offset, ` +
-            `${entry.streak} day streak, ${entry.achievements} achievement${entry.achievements === 1 ? '' : 's'}` +
-            (entry.isFriend ? ', friend' : ''),
-        };
+  const myRank = rows.findIndex((r) => r.isMe) + 1;
+
+  const shareScore = async () => {
+    try {
+      await Share.share({
+        message: `Can you beat my SaveVolt score? I'm level ${me.level} (${me.levelName}) with ${me.points} points. In SaveVolt open Goals, Leaderboard and paste this code:\n\n${getScoreCode()}`,
       });
-  }, [entries, activeTab]);
-
-  const userEntry = useMemo(
-    // Find current user (first entry for demo)
-    () => entries.find((entry) => entry.userId === CURRENT_USER_ID) ?? entries[0] ?? null,
-    [entries],
-  );
-  const userRank = userEntry ? rankFor(userEntry, activeTab) : null;
-
-  const renderList = () => {
-    if (!isLoaded) {
-      return [0, 1, 2].map((key) => (
-        <SkeletonCard key={key} lines={1} label="Loading leaderboard" style={s.skeletonCard} />
-      ));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not share your score.');
     }
+  };
 
-    if (rows.length === 0) {
-      return activeTab === 'friends' && entries.length > 0 ? (
-        <EmptyState
-          variant="inline"
-          icon="👥"
-          title="No friends in this preview"
-          body="None of the sample players are marked as friends. Switch to Global to see the full standings."
-          primaryAction={{ label: 'Show global rankings', onPress: () => setActiveTab('all') }}
-        />
-      ) : (
-        <EmptyState
-          variant="inline"
-          icon="🏆"
-          title="No rankings available yet"
-          body="Start saving energy to climb the leaderboard!"
-          primaryAction={{ label: 'Reload rankings', hint: 'Loads the sample standings again', onPress: onRefresh }}
-        />
-      );
+  const addFriend = async () => {
+    setImporting(true);
+    try {
+      const result = await importShareCode(code);
+      setCode('');
+      toast.success(result.message);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not read that code.');
+    } finally {
+      setImporting(false);
     }
+  };
 
-    return rows.map(({ entry, rank, isCurrentUser, savings, co2, displayName, label }, index) => (
-      <View
-        key={entry.id}
-        style={[
-          s.entryCard,
-          isCurrentUser && s.currentUserCard,
-          index < 3 && s.topThreeCard,
-        ]}
-        accessible
-        accessibilityLabel={label}
-      >
-        <View style={s.rankContainer}>
-          <Text style={s.rankText}>{getRankEmoji(rank)}</Text>
-        </View>
-
-        <Image source={{ uri: entry.avatar }} style={s.avatar} accessible={false} />
-
-        <View style={s.infoContainer}>
-          <View style={s.nameRow}>
-            <Text style={[s.username, isCurrentUser && s.currentUserText]}>{displayName}</Text>
-            {entry.isFriend && <Text style={s.friendBadge}>👥 Friend</Text>}
-          </View>
-
-          <View style={s.statsRow}>
-            <View style={s.stat}>
-              <Text style={s.statValue}>{savings}</Text>
-              <Text style={s.statLabel}>kWh Saved</Text>
-            </View>
-            <View style={s.stat}>
-              <Text style={s.statValue}>{co2}</Text>
-              <Text style={s.statLabel}>kg CO₂</Text>
-            </View>
-            <View style={s.stat}>
-              <Text style={s.statValue}>{entry.streak}</Text>
-              <Text style={s.statLabel}>🔥 Streak</Text>
-            </View>
-          </View>
-        </View>
-
-        <View style={s.achievementsContainer}>
-          <Text style={s.achievementCount}>🏆 {entry.achievements}</Text>
-        </View>
-      </View>
-    ));
+  const confirmRemove = (row: Row) => {
+    Alert.alert('Remove friend?', `Remove ${row.name} from your leaderboard?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: () => removeFriend(row.id) },
+    ]);
   };
 
   return (
-    <View style={s.container}>
-      <FocusAwareStatusBar variant="hero" />
-      {/* Header */}
-      <LinearGradient colors={colors.heroGradient} style={s.header}>
-        <Text style={s.headerLabel}>LOCAL PREVIEW</Text>
-        <Text style={s.headerTitle} accessibilityRole="header">Leaderboard Preview</Text>
-      </LinearGradient>
-
-      <View style={s.previewNotice}>
-        <Text style={s.previewNoticeText}>Sample standings are stored on this device. Connect a leaderboard service to compete with real people.</Text>
-      </View>
-
-      {/* Current User Card */}
-      {userEntry && userRank !== null && (
-        <View
-          style={s.currentUserBanner}
-          accessible
-          accessibilityLabel={`Your sample position: rank ${userRank} in this preview. Total savings: ${userEntry.totalSavings.toFixed(0)} kWh`}
-        >
-          <View style={s.currentUserInfo}>
-            <Image source={{ uri: userEntry.avatar }} style={s.bannerAvatar} accessible={false} />
-            <View>
-              <Text style={s.bannerName}>Your sample position</Text>
-              <Text style={s.bannerRank}>
-                {getRankEmoji(userRank)}
-                {' '}in this preview
-              </Text>
-            </View>
-          </View>
-          <View style={s.bannerStats}>
-            <Text style={s.bannerStatText}>{userEntry.totalSavings.toFixed(0)} kWh</Text>
-            <Text style={s.bannerStatLabel}>Total Savings</Text>
-          </View>
-        </View>
-      )}
-
-      {/* Tab Selector */}
-      <View style={s.tabContainer} accessibilityRole="tablist">
-        {TABS.map((tab) => {
-          const selected = activeTab === tab.key;
-          return (
-            <AccessibleTouchable
-              key={tab.key}
-              role="tab"
-              label={tab.label}
-              hint={tab.hint}
-              accessibilityState={{ selected }}
-              style={[s.tab, selected && s.activeTab]}
-              onPress={() => setActiveTab(tab.key)}
-            >
-              <Text style={[s.tabText, selected && s.activeTabText]}>
-                {tab.icon} {tab.label}
-              </Text>
-            </AccessibleTouchable>
-          );
-        })}
-      </View>
-
-      {/* Leaderboard List */}
-      <ScrollView
-        style={s.scrollView}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor={colors.primary}
-            colors={[colors.primary]}
-            progressBackgroundColor={colors.card}
-          />
-        }
+    <Screen withBack>
+      <HeroHeader
+        withBack
+        eyebrow="LEADERBOARD"
+        title="You and your friends"
+        subtitle="Scores come from your own data and from codes your friends share with you."
+        variant="grape"
       >
-        {renderList()}
-      </ScrollView>
+        <GlassPanel style={s.heroPanel}>
+          <View style={s.heroStat}>
+            <Text style={s.heroValue}>#{myRank}</Text>
+            <Text style={s.heroLabel}>your rank</Text>
+          </View>
+          <View style={s.heroDivider} />
+          <View style={s.heroStat}>
+            <Text style={s.heroValue}>{me.points}</Text>
+            <Text style={s.heroLabel}>points · L{me.level}</Text>
+          </View>
+          <View style={s.heroDivider} />
+          <View style={s.heroStat}>
+            <Text style={s.heroValue}>{friends.length}</Text>
+            <Text style={s.heroLabel}>{friends.length === 1 ? 'friend' : 'friends'}</Text>
+          </View>
+        </GlassPanel>
+      </HeroHeader>
 
-      {/* Bottom Info */}
-      <View style={s.bottomInfo}>
-        <Text style={s.bottomText} accessibilityLabel="Rankings update daily based on energy savings">
-          💡 Rankings update daily based on energy savings
-        </Text>
+      <View style={s.metrics}>
+        {METRICS.map((m) => (
+          <Chip key={m.key} label={m.label} icon={m.icon} selected={metric === m.key} onPress={() => setMetric(m.key)} />
+        ))}
       </View>
-    </View>
+
+      <View style={s.list}>
+        {rows.map((row, index) => (
+          <Card key={row.id} style={[s.row, row.isMe && s.rowMe]}>
+            <View style={s.rowInner}>
+              <Text style={s.rank} accessibilityLabel={`Rank ${index + 1}`}>{MEDALS[index] ?? `#${index + 1}`}</Text>
+              <IconBubble icon={row.isMe ? 'account-star' : 'account'} tone={row.isMe ? 'primary' : 'accent'} size={40} />
+              <View style={s.rowText}>
+                <Text style={s.name} numberOfLines={1}>{row.isMe && row.name !== 'You' ? `${row.name} (you)` : row.name}</Text>
+                <Text style={s.meta} numberOfLines={1}>
+                  L{row.level} · {row.badges} badges · {row.streak} d streak
+                  {row.updated ? ` · ${formatDistanceToNow(new Date(row.updated), { addSuffix: true })}` : ''}
+                </Text>
+              </View>
+              <Text style={[s.value, { color: row.isMe ? colors.primaryText : colors.text }]}>{formatMetric(row, metric)}</Text>
+              {!row.isMe ? (
+                <AccessibleTouchable label={`Remove ${row.name}`} onPress={() => confirmRemove(row)} style={s.remove}>
+                  <Text style={s.removeText}>✕</Text>
+                </AccessibleTouchable>
+              ) : null}
+            </View>
+          </Card>
+        ))}
+      </View>
+
+      <SectionHeader title="Add friends" subtitle="Each of you shares a score code; paste theirs below. Share again any time to update." />
+      <View style={s.list}>
+        <Card>
+          <View style={s.addForm}>
+            <Button label="Share my score code" icon="share-variant" onPress={shareScore} full />
+            <TextField
+              label="Friend's code"
+              placeholder="Paste a code starting with SV1S."
+              value={code}
+              onChangeText={setCode}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <Button label="Add to leaderboard" icon="account-plus-outline" variant="secondary" onPress={addFriend} loading={importing} disabled={!code.trim()} full />
+          </View>
+        </Card>
+        {friends.length === 0 ? (
+          <Text style={s.hint}>
+            No friends yet. Share your code over WhatsApp, SMS or email, and ask friends to send theirs back.
+          </Text>
+        ) : null}
+      </View>
+    </Screen>
   );
 };
 
 const createStyles = (c: ThemeColors) => StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: c.background,
-  },
-  header: {
-    paddingTop: 54,
-    paddingBottom: 28,
-    paddingHorizontal: Spacing.page,
-    alignItems: 'center',
-  },
-  headerLabel: {
-    ...Typography.overline,
-    color: c.primary,
-    marginBottom: 4,
-  },
-  headerTitle: {
-    ...Typography.displaySmall,
-    color: c.textOnDark,
-  },
-  previewNotice: {
-    marginHorizontal: Spacing.page,
-    marginTop: Spacing.page,
-    backgroundColor: c.primarySoft,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
-  },
-  previewNoticeText: { ...Typography.bodySmall, color: c.text, lineHeight: 18 },
-  currentUserBanner: {
-    backgroundColor: c.card,
-    marginHorizontal: Spacing.lg,
-    marginTop: Spacing.lg,
-    marginBottom: Spacing.sm,
-    padding: Spacing.lg,
-    borderRadius: Radius.card,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderLeftWidth: 4,
-    borderLeftColor: c.primary,
-    ...Shadows.md,
-  },
-  currentUserInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  bannerAvatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    marginRight: Spacing.md,
-    backgroundColor: c.border,
-  },
-  bannerName: {
-    ...Typography.bodyMedium,
-    color: c.textSecondary,
-    marginBottom: 3,
-  },
-  bannerRank: {
-    ...Typography.h3,
-    color: c.text,
-  },
-  bannerStats: {
-    alignItems: 'flex-end',
-  },
-  bannerStatText: {
-    ...Typography.stat,
-    color: c.primaryText,
-  },
-  bannerStatLabel: {
-    ...Typography.bodySmall,
-    color: c.textSecondary,
-  },
-  tabContainer: {
-    flexDirection: 'row',
-    backgroundColor: c.card,
-    marginHorizontal: Spacing.lg,
-    marginBottom: Spacing.sm,
-    borderRadius: Radius.md,
-    padding: Spacing.xs,
-    ...Shadows.sm,
-  },
-  tab: {
-    flex: 1,
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.sm,
-    borderRadius: Radius.sm,
-    alignItems: 'center',
-  },
-  activeTab: {
-    backgroundColor: c.primary,
-  },
-  tabText: {
-    ...Typography.label,
-    color: c.textSecondary,
-  },
-  activeTabText: {
-    color: c.onPrimary,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  skeletonCard: {
-    marginHorizontal: Spacing.lg,
-    marginVertical: 6,
-  },
-  entryCard: {
-    backgroundColor: c.card,
-    marginHorizontal: Spacing.lg,
-    marginVertical: 6,
-    padding: Spacing.md,
-    borderRadius: Radius.card,
-    flexDirection: 'row',
-    alignItems: 'center',
-    ...Shadows.sm,
-  },
-  currentUserCard: {
-    borderWidth: 2,
-    borderColor: c.primary,
-    backgroundColor: c.primarySoft,
-  },
-  topThreeCard: {
-    ...Shadows.md,
-  },
-  rankContainer: {
-    width: 50,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  rankText: {
-    ...Typography.h2,
-    color: c.textSecondary,
-  },
-  avatar: {
-    width: 45,
-    height: 45,
-    borderRadius: 22.5,
-    marginRight: Spacing.md,
-    backgroundColor: c.border,
-  },
-  infoContainer: {
-    flex: 1,
-  },
-  nameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  username: {
-    ...Typography.h3,
-    color: c.text,
-    marginRight: Spacing.sm,
-  },
-  currentUserText: {
-    color: c.primaryText,
-  },
-  friendBadge: {
-    ...Typography.overline,
-    color: c.text,
-    backgroundColor: c.successSoft,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: Radius.sm,
-  },
-  statsRow: {
-    flexDirection: 'row',
-  },
-  stat: {
-    marginRight: Spacing.lg,
-  },
-  statValue: {
-    ...Typography.label,
-    color: c.text,
-  },
-  statLabel: {
-    ...Typography.overline,
-    color: c.textSecondary,
-    letterSpacing: 0.3,
-  },
-  achievementsContainer: {
-    alignItems: 'center',
-  },
-  achievementCount: {
-    ...Typography.label,
-    color: c.primaryText,
-  },
-  bottomInfo: {
-    backgroundColor: c.card,
-    padding: Spacing.md,
-    alignItems: 'center',
-    borderTopWidth: 1,
-    borderTopColor: c.border,
-  },
-  bottomText: {
-    ...Typography.bodySmall,
-    color: c.textSecondary,
-    textAlign: 'center',
-  },
+  heroPanel: { flexDirection: 'row', alignItems: 'center', marginTop: 18, paddingVertical: 14 },
+  heroStat: { flex: 1, alignItems: 'center' },
+  heroValue: { ...Typography.h1, color: c.textOnDark },
+  heroLabel: { ...Typography.labelSmall, color: c.textOnDarkSub, marginTop: 2 },
+  heroDivider: { width: 1, height: 32, backgroundColor: c.glassBorder },
+  metrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: Spacing.page, marginTop: 18 },
+  list: { paddingHorizontal: Spacing.page, gap: 10, marginTop: 14 },
+  row: { padding: 12 },
+  rowMe: { borderColor: c.primary, borderWidth: 1.5 },
+  rowInner: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  rank: { ...Typography.h3, color: c.textSecondary, width: 34, textAlign: 'center' },
+  rowText: { flex: 1 },
+  name: { ...Typography.h3, color: c.text },
+  meta: { ...Typography.bodySmall, color: c.textSecondary, marginTop: 2 },
+  value: { ...Typography.statSmall, fontVariant: ['tabular-nums'] },
+  remove: { width: 36, alignItems: 'center' },
+  removeText: { ...Typography.label, color: c.textMuted },
+  addForm: { gap: 12 },
+  hint: { ...Typography.bodySmall, color: c.textSecondary, textAlign: 'center', paddingHorizontal: Spacing.lg, borderRadius: Radius.md },
 });
 
 export default LeaderboardScreen;
