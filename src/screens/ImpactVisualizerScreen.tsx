@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,7 @@ import FocusAwareStatusBar from '../components/FocusAwareStatusBar';
 import { formatEnergy, formatCost, formatCO2 } from '../utils/energy';
 import { format, parseISO } from 'date-fns';
 import ViewShot from 'react-native-view-shot';
+import BlockchainService, { CarbonCredit } from '../services/BlockchainService';
 
 interface ImpactVisualizerScreenProps {
   navigation: { navigate: (screen: string, params?: object) => void };
@@ -53,6 +54,38 @@ const ImpactVisualizerScreen = ({ navigation }: ImpactVisualizerScreenProps) => 
   );
   const { colors } = useTheme();
   const s = useThemedStyles(createStyles);
+
+  const [carbonCredits, setCarbonCredits] = useState<CarbonCredit[]>([]);
+  const [isMinting, setIsMinting] = useState(false);
+
+  useEffect(() => {
+    BlockchainService.initialize().then(() => {
+      setCarbonCredits(BlockchainService.getCarbonCredits());
+    });
+  }, []);
+
+  const handleMintCertificate = async () => {
+    if (!dashboardData || dashboardData.totalCO2Saved <= 0) {
+      Alert.alert('No CO2 Offset Recorded', 'Reduce consumption or track appliances first to mint verified carbon certificates.');
+      return;
+    }
+    setIsMinting(true);
+    try {
+      const credit = await BlockchainService.mintCarbonCredit(
+        dashboardData.totalCO2Saved,
+        dashboardData.totalEnergyConsumed
+      );
+      setCarbonCredits(BlockchainService.getCarbonCredits());
+      Alert.alert(
+        '🌱 Certificate Minted!',
+        `Verified Green Energy Certificate #${credit.tokenId.slice(-6)} issued for ${credit.amount.toFixed(1)} kg CO2 avoided.`
+      );
+    } catch {
+      Alert.alert('Minting Error', 'Could not mint certificate at this time. Please try again.');
+    } finally {
+      setIsMinting(false);
+    }
+  };
 
   const viewShotRef = useRef<ViewShot>(null);
 
@@ -346,6 +379,74 @@ const ImpactVisualizerScreen = ({ navigation }: ImpactVisualizerScreenProps) => 
             </LinearGradient>
           </AccessibleTouchable>
         )}
+      </View>
+
+      {/* On-Chain Carbon Offsets & Certificates */}
+      <View style={s.blockchainSection}>
+        <View style={s.sectionHeader}>
+          <Text style={s.sectionTitle} accessibilityRole="header">Green Certificates</Text>
+          <View style={s.networkBadge}>
+            <Text style={s.networkBadgeText}>Polygon Web3</Text>
+          </View>
+        </View>
+
+        <View style={s.blockchainCard}>
+          <Text style={s.blockchainTitle}>Tokenized Carbon Credits</Text>
+          <Text style={s.blockchainSubtitle}>
+            Convert your real CO₂ savings into verifiable on-chain certificates and carbon offset tokens.
+          </Text>
+
+          <View style={s.blockchainStatsRow}>
+            <View style={s.blockchainStat}>
+              <Text style={s.blockchainStatLabel}>Offset</Text>
+              <Text style={s.blockchainStatVal}>{dashboardData ? `${dashboardData.totalCO2Saved.toFixed(1)} kg` : '0 kg'}</Text>
+            </View>
+            <View style={s.blockchainStat}>
+              <Text style={s.blockchainStatLabel}>Certificates</Text>
+              <Text style={s.blockchainStatVal}>{carbonCredits.length}</Text>
+            </View>
+            <View style={s.blockchainStat}>
+              <Text style={s.blockchainStatLabel}>Est. Value</Text>
+              <Text style={s.blockchainStatVal}>
+                ${(carbonCredits.reduce((acc, c) => acc + c.marketValue, 0)).toFixed(2)}
+              </Text>
+            </View>
+          </View>
+
+          <AccessibleTouchable
+            label="Mint Carbon Certificate"
+            hint="Mints a verifiable green energy certificate for your saved carbon"
+            style={s.mintBtn}
+            disabled={isMinting || !dashboardData || dashboardData.totalCO2Saved <= 0}
+            onPress={handleMintCertificate}
+          >
+            <LinearGradient
+              colors={['#10B981', '#059669']}
+              style={s.mintBtnGradient}
+            >
+              <Text style={s.mintBtnText}>
+                {isMinting ? 'Minting on Chain…' : '🌱 Mint Carbon Certificate'}
+              </Text>
+            </LinearGradient>
+          </AccessibleTouchable>
+
+          {carbonCredits.length > 0 && (
+            <View style={s.certificatesList}>
+              <Text style={s.certificatesHeading}>Issued Certificates ({carbonCredits.length})</Text>
+              {carbonCredits.slice(-3).reverse().map((c) => (
+                <View key={c.id} style={s.certificateRow}>
+                  <View style={s.certInfo}>
+                    <Text style={s.certTitle}>NFT #{c.tokenId.slice(-6)} • {c.amount.toFixed(1)} kg CO₂</Text>
+                    <Text style={s.certTx}>Tx: {c.transactionHash ? c.transactionHash.slice(0, 16) + '…' : 'Verified'}</Text>
+                  </View>
+                  <View style={s.certBadge}>
+                    <Text style={s.certBadgeText}>VERIFIED</Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
       </View>
 
       {/* Eco Goal Countdown Timers */}
@@ -740,6 +841,115 @@ const createStyles = (c: ThemeColors) => StyleSheet.create({
   historyStreak: {
     fontSize: 14,
     color: c.text,
+  },
+  blockchainSection: {
+    padding: Spacing.page,
+  },
+  networkBadge: {
+    backgroundColor: '#8B5CF620',
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: '#8B5CF650',
+  },
+  networkBadgeText: {
+    ...Typography.overline,
+    color: '#8B5CF6',
+    fontWeight: '700',
+  },
+  blockchainCard: {
+    backgroundColor: c.card,
+    borderRadius: Radius.card,
+    padding: Spacing.lg,
+    ...Shadows.sm,
+  },
+  blockchainTitle: {
+    ...Typography.h3,
+    color: c.text,
+    marginBottom: 4,
+  },
+  blockchainSubtitle: {
+    ...Typography.bodySmall,
+    color: c.textSecondary,
+    marginBottom: Spacing.md,
+  },
+  blockchainStatsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    backgroundColor: c.background,
+    borderRadius: Radius.sm,
+    paddingVertical: Spacing.md,
+    marginBottom: Spacing.md,
+  },
+  blockchainStat: {
+    alignItems: 'center',
+  },
+  blockchainStatLabel: {
+    ...Typography.overline,
+    color: c.textMuted,
+    marginBottom: 2,
+  },
+  blockchainStatVal: {
+    ...Typography.h3,
+    color: '#10B981',
+  },
+  mintBtn: {
+    borderRadius: Radius.card,
+    overflow: 'hidden',
+    marginTop: Spacing.xs,
+  },
+  mintBtnGradient: {
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+    borderRadius: Radius.card,
+  },
+  mintBtnText: {
+    ...Typography.label,
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  certificatesList: {
+    marginTop: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: c.borderLight,
+    paddingTop: Spacing.md,
+  },
+  certificatesHeading: {
+    ...Typography.label,
+    color: c.text,
+    marginBottom: Spacing.sm,
+  },
+  certificateRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: Spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: c.borderLight,
+  },
+  certInfo: {
+    flex: 1,
+  },
+  certTitle: {
+    ...Typography.bodyMedium,
+    color: c.text,
+    fontWeight: '600',
+  },
+  certTx: {
+    ...Typography.bodySmall,
+    color: c.textMuted,
+  },
+  certBadge: {
+    backgroundColor: '#10B98120',
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+    borderRadius: Radius.pill,
+  },
+  certBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#10B981',
   },
 });
 

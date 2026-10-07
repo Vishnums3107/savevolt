@@ -55,9 +55,10 @@ interface RecommendationCardProps {
   s: Styles;
   colors: ThemeColors;
   onDismiss: (rec: AIRecommendation) => void;
+  onApply?: (rec: AIRecommendation) => void;
 }
 
-function RecommendationCard({ rec, currency, s, colors, onDismiss }: RecommendationCardProps) {
+function RecommendationCard({ rec, currency, s, colors, onDismiss, onApply }: RecommendationCardProps) {
   const energySaved = `${formatEnergy(rec.potentialSavings)}/mo`;
   const costSaved = `${formatCost(rec.potentialCostSavings, currency)}/mo`;
   const confidence = `${(rec.confidence * 100).toFixed(0)}%`;
@@ -104,14 +105,26 @@ function RecommendationCard({ rec, currency, s, colors, onDismiss }: Recommendat
         </View>
       ) : null}
 
-      <AccessibleTouchable
-        label={`Mark ${rec.title} as done`}
-        hint="Asks for confirmation, then removes this recommendation"
-        style={s.dismissBtn}
-        onPress={() => onDismiss(rec)}
-      >
-        <Text style={s.dismissBtnText}>Mark as Done</Text>
-      </AccessibleTouchable>
+      <View style={s.btnRow}>
+        {rec.action && onApply ? (
+          <AccessibleTouchable
+            label={`Apply action for ${rec.title}`}
+            hint="Executes this recommendation directly in your energy tracking"
+            style={[s.applyBtn, { backgroundColor: colors.primary }]}
+            onPress={() => onApply(rec)}
+          >
+            <Text style={s.applyBtnText}>⚡ Apply Action</Text>
+          </AccessibleTouchable>
+        ) : null}
+        <AccessibleTouchable
+          label={`Mark ${rec.title} as done`}
+          hint="Asks for confirmation, then removes this recommendation"
+          style={[s.dismissBtn, rec.action && onApply ? s.dismissBtnFlex : null]}
+          onPress={() => onDismiss(rec)}
+        >
+          <Text style={s.dismissBtnText}>Dismiss</Text>
+        </AccessibleTouchable>
+      </View>
     </View>
   );
 }
@@ -204,6 +217,20 @@ const RecommendationsScreen = () => {
     ),
     [recommendations],
   );
+
+  const handleApply = useCallback(async (rec: AIRecommendation) => {
+    try {
+      const result = await AIRecommendationEngine.applyRecommendation(rec);
+      if (result.success) {
+        setRecommendations((current) => current.filter((item) => item.id !== rec.id));
+        Alert.alert('Action Applied', result.message);
+      } else {
+        Alert.alert('Action Failed', result.message);
+      }
+    } catch {
+      Alert.alert('Error', 'Failed to apply recommendation.');
+    }
+  }, []);
 
   const handleRefresh = useCallback(() => setRefreshCount((count) => count + 1), []);
 
@@ -345,6 +372,7 @@ const RecommendationsScreen = () => {
                 s={s}
                 colors={colors}
                 onDismiss={handleDismiss}
+                onApply={handleApply}
               />
             ))}
 
@@ -551,6 +579,27 @@ const createStyles = (c: ThemeColors) => {
     actionText: {
       ...Typography.bodyMedium,
       color: c.text,
+    },
+    btnRow: {
+      flexDirection: 'row',
+      gap: Spacing.sm,
+      marginTop: Spacing.xs,
+    },
+    applyBtn: {
+      flex: 1.3,
+      borderRadius: Radius.sm,
+      paddingVertical: Spacing.sm,
+      paddingHorizontal: Spacing.md,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    applyBtnText: {
+      ...Typography.label,
+      color: c.onPrimary,
+      fontWeight: '700',
+    },
+    dismissBtnFlex: {
+      flex: 0.9,
     },
     dismissBtn: {
       backgroundColor: c.background,

@@ -17,6 +17,9 @@ export interface AIRecommendation {
   confidence: number; // 0-1
   actionable: boolean;
   action?: string;
+  targetApplianceId?: string;
+  actionType?: 'reduce_hours' | 'pause_appliance' | 'create_goal' | 'create_reminder' | 'custom';
+  actionPayload?: { hours?: number; goalKwh?: number; reminderTime?: string };
   createdAt: Date;
 }
 
@@ -161,6 +164,9 @@ class AIRecommendationEngine {
           confidence: 0.9,
           actionable: true,
           action: `Reduce ${appliance.name} usage by 2 hours per day`,
+          targetApplianceId: appliance.id,
+          actionType: 'reduce_hours',
+          actionPayload: { hours: 2 },
           createdAt: new Date(),
         });
       }
@@ -195,6 +201,9 @@ class AIRecommendationEngine {
           confidence: 0.65,
           actionable: true,
           action: `Shift ${appliance.name} usage to off-peak hours`,
+          targetApplianceId: appliance.id,
+          actionType: 'create_reminder',
+          actionPayload: { reminderTime: '22:00' },
           createdAt: new Date(),
         });
       }
@@ -278,6 +287,8 @@ class AIRecommendationEngine {
       confidence: 0.9,
       actionable: true,
       action: 'Implement smart energy habits',
+      actionType: 'create_goal',
+      actionPayload: { goalKwh: 50 },
       createdAt: new Date(),
     });
   }
@@ -307,7 +318,71 @@ class AIRecommendationEngine {
 
   /**
    * Mark recommendation as actioned
+   */  /**
+   * Apply recommendation directly into the app state
    */
+  public async applyRecommendation(
+    rec: AIRecommendation
+  ): Promise<{ success: boolean; message: string }> {
+    try {
+      const { useEnergyStore } = await import('../store/energyStore');
+      const store = useEnergyStore.getState();
+
+      if (rec.actionType === 'reduce_hours' && rec.targetApplianceId) {
+        const app = store.appliances.find((a) => a.id === rec.targetApplianceId);
+        if (app) {
+          const reduction = rec.actionPayload?.hours ?? 2;
+          const newHours = Math.max(0.5, app.hoursPerDay - reduction);
+          await store.updateAppliance(app.id, { hoursPerDay: newHours });
+          await this.markAsActioned(rec.id);
+          return { success: true, message: `Reduced ${app.name} usage to ${newHours}h/day.` };
+        }
+      }
+
+      if (rec.actionType === 'pause_appliance' && rec.targetApplianceId) {
+        const app = store.appliances.find((a) => a.id === rec.targetApplianceId);
+        if (app) {
+          await store.updateAppliance(app.id, { isActive: false });
+          await this.markAsActioned(rec.id);
+          return { success: true, message: `Paused ${app.name} to eliminate phantom load.` };
+        }
+      }
+
+      if (rec.actionType === 'create_goal') {
+        const goalKwh = rec.actionPayload?.goalKwh ?? Math.round(rec.potentialSavings || 50);
+        const deadline = new Date();
+        deadline.setDate(deadline.getDate() + 30);
+        await store.addGoal({
+          type: 'consumption',
+          target: goalKwh,
+          deadline: deadline.toISOString(),
+        });
+        await this.markAsActioned(rec.id);
+        return { success: true, message: `Created new monthly goal to save ${goalKwh} kWh.` };
+      }
+
+      if (rec.actionType === 'create_reminder') {
+        const time = rec.actionPayload?.reminderTime ?? '22:00';
+        await store.addReminder({
+          title: 'Off-Peak Energy Reminder',
+          message: rec.action || 'Shift heavy appliances to off-peak hours now to save money.',
+          time,
+          days: [1, 2, 3, 4, 5],
+          isActive: true,
+        });
+        await this.markAsActioned(rec.id);
+        return { success: true, message: `Created off-peak reminder for ${time}.` };
+      }
+
+      await this.markAsActioned(rec.id);
+      return { success: true, message: `Action completed for "${rec.title}".` };
+    } catch (error) {
+      console.error('Failed to apply recommendation:', error);
+      return { success: false, message: error instanceof Error ? error.message : 'Action failed.' };
+    }
+  }
+
+
   public async markAsActioned(recommendationId: string): Promise<void> {
     const index = this.recommendations.findIndex((rec) => rec.id === recommendationId);
     if (index >= 0) {

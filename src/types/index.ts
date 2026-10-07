@@ -155,6 +155,7 @@ export interface ChatMessage {
   isUser: boolean;
   timestamp: string;
   suggestions?: string[];
+  source?: 'gemini' | 'local' | 'system';
 }
 
 export interface AppSettings {
@@ -166,6 +167,7 @@ export interface AppSettings {
   darkMode: boolean;
   voiceEnabled: boolean;
   geminiApiKey?: string;
+  geminiModel?: string;
 }
 
 export interface Household {

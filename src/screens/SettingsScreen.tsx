@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TextInput, Switch, Alert,
+  View, Text, StyleSheet, ScrollView, TextInput, Switch, Alert, TouchableOpacity,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useEnergy } from '../context/EnergyContext';
 import { ThemeColors, useTheme, useThemedStyles } from '../context/ThemeContext';
 import AccessibleTouchable from '../components/AccessibleTouchable';
 import FocusAwareStatusBar from '../components/FocusAwareStatusBar';
-import { testGeminiConnection } from '../services/GeminiService';
+import { validateGeminiKey, getActiveGeminiModel } from '../services/GeminiService';
 import { Typography, Spacing, Radius, Shadows } from '../theme';
 
 const TOGGLES = [
@@ -16,7 +17,6 @@ const TOGGLES = [
   { label: 'Voice Tips', desc: 'Text-to-speech', hint: 'Reads energy tips aloud with text-to-speech', key: 'voiceEnabled' as const, icon: '🔊' },
 ];
 
-// Fixed purple (dark enough for white text in both themes) so the AI action stands apart from the green save button.
 const GEMINI_GRADIENT = ['#7c3aed', '#6d28d9'];
 const GEMINI_BUSY_GRADIENT = ['#4a4a4a', '#3a3a3a'];
 
@@ -29,7 +29,9 @@ const SettingsScreen = () => {
   const [location, setLocation] = useState(settings.weatherLocation);
   const [co2Factor, setCo2Factor] = useState(settings.co2Factor.toString());
   const [geminiKey, setGeminiKey] = useState(settings.geminiApiKey ?? '');
+  const [showApiKey, setShowApiKey] = useState(false);
   const [testingGemini, setTestingGemini] = useState(false);
+  const [testFeedback, setTestFeedback] = useState<{ success: boolean; message: string } | null>(null);
   const keyboardAppearance = isDark ? 'dark' : 'light';
 
   useEffect(() => {
@@ -59,32 +61,49 @@ const SettingsScreen = () => {
         co2Factor: parsedCo2Factor,
         geminiApiKey: geminiKey.trim(),
       });
-      Alert.alert('Saved', 'Settings updated successfully');
-    } catch { Alert.alert('Error', 'Failed to save'); }
+      Alert.alert('Saved', 'Settings updated successfully. Your changes are live in Chat Assistant and throughout SaveVolt!');
+    } catch {
+      Alert.alert('Error', 'Failed to save settings.');
+    }
   };
 
   const handleTestGemini = async () => {
     const cleanedKey = geminiKey.trim();
     if (!cleanedKey) {
       Alert.alert('No API key', 'Enter a Gemini API key before testing the connection.');
+      setTestFeedback({ success: false, message: 'Please enter an API key above to test.' });
       return;
     }
 
     setTestingGemini(true);
+    setTestFeedback(null);
     try {
-      const isValid = await testGeminiConnection(cleanedKey);
-      Alert.alert(
-        isValid ? 'Connection successful' : 'Connection failed',
-        isValid
-          ? 'Your Gemini API key is valid and responding.'
-          : 'The key could not be validated. Please check the key and try again.',
-      );
+      const result = await validateGeminiKey(cleanedKey);
+      if (result.success) {
+        const modelName = result.model || getActiveGeminiModel();
+        const successMsg = `Connected successfully! Responded from Google Gemini (${modelName}). Your Assistant is fully AI-powered.`;
+        setTestFeedback({ success: true, message: successMsg });
+        Alert.alert('Connection Successful', successMsg);
+      } else {
+        const errorMsg = result.error || 'The key could not be validated. Please check the key and your connection.';
+        setTestFeedback({ success: false, message: errorMsg });
+        Alert.alert('Connection Failed', errorMsg);
+      }
     } catch {
-      Alert.alert('Connection failed', 'Unable to validate the Gemini API key right now.');
+      const err = 'Unable to validate the Gemini API key right now. Please check your network connection.';
+      setTestFeedback({ success: false, message: err });
+      Alert.alert('Connection Failed', err);
     } finally {
       setTestingGemini(false);
     }
   };
+
+  const handleClearKey = () => {
+    setGeminiKey('');
+    setTestFeedback(null);
+  };
+
+  const hasKey = geminiKey.trim().length > 0;
 
   return (
     <ScrollView style={s.screen} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
@@ -167,28 +186,87 @@ const SettingsScreen = () => {
           ))}
         </View>
 
-        {/* AI */}
-        <Text style={s.secTitle} accessibilityRole="header">AI Assistant</Text>
+        {/* AI Assistant */}
+        <Text style={s.secTitle} accessibilityRole="header">AI Assistant & Gemini</Text>
         <View style={s.card}>
-          <Text style={s.label}>Gemini API Key</Text>
-          <TextInput
-            style={[s.input, s.keyInput]}
-            value={geminiKey}
-            onChangeText={setGeminiKey}
-            placeholder="Enter your Gemini API key"
-            placeholderTextColor={colors.textMuted}
-            secureTextEntry
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardAppearance={keyboardAppearance}
-            accessibilityLabel="Gemini API key"
-            accessibilityHint="Optional. Leave blank to keep the built-in local assistant"
-          />
-          <Text style={s.hint}>Leave blank to keep the built-in local assistant. Add a key to enable Gemini-powered recommendations and chat.</Text>
+          <View style={s.aiStatusRow}>
+            <Text style={s.label}>Google Gemini API Key</Text>
+            <View style={[s.statusBadge, hasKey ? s.statusBadgeActive : s.statusBadgeInactive]}>
+              <View style={[s.statusDot, hasKey ? s.statusDotActive : s.statusDotInactive]} />
+              <Text style={[s.statusText, hasKey ? s.statusTextActive : s.statusTextInactive]}>
+                {hasKey ? 'Gemini AI Ready' : 'Local Engine Mode'}
+              </Text>
+            </View>
+          </View>
+
+          <View style={s.inputWithAction}>
+            <TextInput
+              style={[s.input, s.keyInputFlex]}
+              value={geminiKey}
+              onChangeText={(text) => {
+                setGeminiKey(text);
+                setTestFeedback(null);
+              }}
+              placeholder="AIzaSy..."
+              placeholderTextColor={colors.textMuted}
+              secureTextEntry={!showApiKey}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardAppearance={keyboardAppearance}
+              accessibilityLabel="Gemini API key"
+              accessibilityHint="Enter your Google AI Studio Gemini API key"
+            />
+            <TouchableOpacity
+              onPress={() => setShowApiKey((v) => !v)}
+              style={s.iconBtn}
+              accessibilityLabel={showApiKey ? 'Hide API key' : 'Show API key'}
+              accessibilityRole="button"
+            >
+              <Icon
+                name={showApiKey ? 'eye-off' : 'eye'}
+                size={20}
+                color={colors.textSecondary}
+              />
+            </TouchableOpacity>
+            {hasKey && (
+              <TouchableOpacity
+                onPress={handleClearKey}
+                style={s.iconBtn}
+                accessibilityLabel="Clear API key"
+                accessibilityRole="button"
+              >
+                <Icon name="close-circle-outline" size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          <Text style={s.hint}>
+            Get a free API key at <Text style={s.highlight}>aistudio.google.com</Text>. When configured, the Energy Assistant provides conversational deep analysis and audit recommendations.
+          </Text>
+
+          <View style={s.modelInfoChip}>
+            <Icon name="lightning-bolt" size={14} color="#7c3aed" />
+            <Text style={s.modelInfoText}>
+              Primary: <Text style={s.boldText}>gemini-2.5-flash</Text> (Auto fallback to 2.0 & 1.5)
+            </Text>
+          </View>
+
+          {testFeedback && (
+            <View style={[s.feedbackBanner, testFeedback.success ? s.feedbackSuccess : s.feedbackError]}>
+              <Icon
+                name={testFeedback.success ? 'check-circle' : 'alert-circle'}
+                size={18}
+                color={testFeedback.success ? '#10b981' : '#ef4444'}
+              />
+              <Text style={[s.feedbackText, testFeedback.success ? s.feedbackTextSuccess : s.feedbackTextError]}>
+                {testFeedback.message}
+              </Text>
+            </View>
+          )}
 
           <AccessibleTouchable
             label={testingGemini ? 'Validating Gemini API key' : 'Test Gemini connection'}
-            hint="Verifies that your Google Gemini API key works correctly"
+            hint="Verifies that your Google Gemini API key works correctly with Google AI"
             style={s.testGeminiButton}
             onPress={handleTestGemini}
             disabled={testingGemini}
@@ -198,7 +276,12 @@ const SettingsScreen = () => {
               colors={testingGemini ? GEMINI_BUSY_GRADIENT : GEMINI_GRADIENT}
               style={s.testGeminiButtonGradient}
             >
-              <Text style={s.testGeminiButtonText}>{testingGemini ? 'Testing...' : 'Test Gemini Connection'}</Text>
+              <View style={s.testBtnContent}>
+                <Icon name={testingGemini ? 'loading' : 'shield-check'} size={18} color="#fff" />
+                <Text style={s.testGeminiButtonText}>
+                  {testingGemini ? 'Validating Key...' : 'Test Gemini Connection'}
+                </Text>
+              </View>
             </LinearGradient>
           </AccessibleTouchable>
         </View>
@@ -252,12 +335,130 @@ const createStyles = (c: ThemeColors) => StyleSheet.create({
   card: { backgroundColor: c.card, borderRadius: Radius.card, padding: Spacing.lg, ...Shadows.sm },
   aboutSection: { alignItems: 'center', marginTop: 24, marginBottom: 40 },
   label: { ...Typography.label, color: c.textSecondary, marginBottom: 6 },
-  input: { backgroundColor: c.inputBg, borderRadius: Radius.sm, padding: 14, ...Typography.bodyLarge, color: c.text, borderWidth: 1, borderColor: c.border },
-  keyInput: { marginBottom: 4 },
+  input: {
+    backgroundColor: c.inputBg,
+    borderRadius: Radius.sm,
+    padding: 14,
+    ...Typography.bodyLarge,
+    color: c.text,
+    borderWidth: 1,
+    borderColor: c.border,
+  },
+  inputWithAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: c.inputBg,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: c.border,
+    paddingRight: 6,
+  },
+  keyInputFlex: {
+    flex: 1,
+    borderWidth: 0,
+    backgroundColor: 'transparent',
+  },
+  iconBtn: {
+    padding: 8,
+  },
+  aiStatusRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: Radius.pill,
+    gap: 5,
+  },
+  statusBadgeActive: {
+    backgroundColor: 'rgba(124, 58, 237, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(124, 58, 237, 0.3)',
+  },
+  statusBadgeInactive: {
+    backgroundColor: 'rgba(100, 116, 139, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(100, 116, 139, 0.25)',
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusDotActive: {
+    backgroundColor: '#7c3aed',
+  },
+  statusDotInactive: {
+    backgroundColor: '#94a3b8',
+  },
+  statusText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  statusTextActive: {
+    color: '#7c3aed',
+  },
+  statusTextInactive: {
+    color: c.textSecondary,
+  },
+  modelInfoChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(124, 58, 237, 0.08)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: Radius.sm,
+    marginTop: 10,
+  },
+  modelInfoText: {
+    fontSize: 12,
+    color: c.textSecondary,
+  },
+  boldText: {
+    fontWeight: '700',
+    color: '#7c3aed',
+  },
+  feedbackBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+    borderRadius: Radius.sm,
+    marginTop: 10,
+  },
+  feedbackSuccess: {
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.25)',
+  },
+  feedbackError: {
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.25)',
+  },
+  feedbackText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  feedbackTextSuccess: {
+    color: '#059669',
+  },
+  feedbackTextError: {
+    color: '#dc2626',
+  },
   hint: { ...Typography.bodySmall, color: c.textSecondary, marginTop: 4 },
+  highlight: { color: '#7c3aed', fontWeight: '600' },
   testGeminiButton: { marginTop: 14 },
   testGeminiButtonGradient: { borderRadius: Radius.md, paddingVertical: 12, alignItems: 'center' },
-  testGeminiButtonText: { ...Typography.label, color: c.textOnDark },
+  testBtnContent: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  testGeminiButtonText: { ...Typography.label, color: '#ffffff', fontWeight: '700' },
   divider: { height: 1, backgroundColor: c.divider, marginVertical: 16 },
   switchRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6 },
   switchIcon: { fontSize: 20, marginRight: 12 },

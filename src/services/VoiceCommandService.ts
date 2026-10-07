@@ -48,6 +48,20 @@ const LOCALE = 'en-US';
 // If neither a result nor an error follows within this window, the session is closed anyway.
 const SETTLE_TIMEOUT_MS = 4000;
 
+import { ApplianceCategory } from '../types';
+
+const guessCategory = (name: string): ApplianceCategory => {
+  const n = name.toLowerCase();
+  if (/light|lamp|bulb|chandelier|led/i.test(n)) return ApplianceCategory.LIGHTING;
+  if (/ac|air condition|cooler|fan|vent/i.test(n)) return ApplianceCategory.COOLING;
+  if (/heater|heating|geyser|furnace|boiler/i.test(n)) return ApplianceCategory.HEATING;
+  if (/fridge|refrigerator|oven|microwave|stove|dishwasher|toaster|kettle|blender/i.test(n)) return ApplianceCategory.KITCHEN;
+  if (/tv|television|speaker|stereo|console|playstation|xbox/i.test(n)) return ApplianceCategory.ENTERTAINMENT;
+  if (/washer|washing|dryer|laundry/i.test(n)) return ApplianceCategory.LAUNDRY;
+  if (/laptop|computer|pc|monitor|printer|router/i.test(n)) return ApplianceCategory.OFFICE;
+  return ApplianceCategory.OTHER;
+};
+
 // Order matters: the first matching pattern wins.
 const DEFAULT_COMMANDS: ReadonlyArray<[string, VoiceCommandHandler]> = [
   ['show-dashboard', {
@@ -62,14 +76,38 @@ const DEFAULT_COMMANDS: ReadonlyArray<[string, VoiceCommandHandler]> = [
     pattern: /^(?:please )?add (an? )?(\w+)( with )?(\d+)?( watts)?/i,
     action: async (params) => {
       const applianceName = params[2];
-      const wattage = params[4] || 100;
-      await speakText(`Adding ${applianceName} with ${wattage} watts`);
+      const wattage = Number(params[4]) || 100;
+      try {
+        const { useEnergyStore } = await import('../store/energyStore');
+        const formattedName = applianceName.charAt(0).toUpperCase() + applianceName.slice(1);
+        await useEnergyStore.getState().addAppliance({
+          name: formattedName,
+          powerRating: wattage,
+          hoursPerDay: 4,
+          quantity: 1,
+          category: guessCategory(applianceName),
+          isActive: true,
+        });
+        await speakText(`Added ${formattedName} with ${wattage} watts to your tracking`);
+      } catch {
+        await speakText(`Adding ${applianceName} with ${wattage} watts`);
+      }
     },
     description: 'Add new appliance',
   }],
   ['show-usage', {
     pattern: /\bshow (my )?(energy )?usage\b|\bwhat(['’]s| is) (my )?(energy )?usage\b/i,
     action: async () => {
+      try {
+        const { useEnergyStore } = await import('../store/energyStore');
+        const dashboard = useEnergyStore.getState().dashboardData;
+        if (dashboard) {
+          const kwh = dashboard.totalEnergyConsumed.toFixed(1);
+          const cost = dashboard.totalCost.toFixed(2);
+          await speakText(`Your monthly energy usage is ${kwh} kilowatt hours, costing approximately $${cost}`);
+          return;
+        }
+      } catch {}
       await speakText('Showing energy usage');
     },
     description: 'Show current energy usage',
@@ -77,8 +115,22 @@ const DEFAULT_COMMANDS: ReadonlyArray<[string, VoiceCommandHandler]> = [
   ['set-goal', {
     pattern: /\bset( a)? goal( of)?( to save)?( energy)? (\d+)/i,
     action: async (params) => {
-      const amount = params[5];
-      await speakText(`Setting energy savings goal of ${amount} kilowatt hours`);
+      const amount = Number(params[5]);
+      try {
+        const { useEnergyStore } = await import('../store/energyStore');
+        if (amount > 0) {
+          const deadline = new Date();
+          deadline.setDate(deadline.getDate() + 30);
+          await useEnergyStore.getState().addGoal({
+            type: 'consumption',
+            target: amount,
+            deadline: deadline.toISOString(),
+          });
+          await speakText(`Set your energy savings goal to ${amount} kilowatt hours`);
+          return;
+        }
+      } catch {}
+      await speakText(`Setting energy savings goal of ${params[5]} kilowatt hours`);
     },
     description: 'Set energy savings goal',
   }],
@@ -92,15 +144,38 @@ const DEFAULT_COMMANDS: ReadonlyArray<[string, VoiceCommandHandler]> = [
   ['toggle-appliance', {
     pattern: /\bturn (on|off) (the )?(\w+)/i,
     action: async (params) => {
-      const action = params[1];
-      const appliance = params[3];
-      await speakText(`Turning ${action} ${appliance}`);
+      const action = params[1].toLowerCase();
+      const query = params[3].toLowerCase();
+      try {
+        const { useEnergyStore } = await import('../store/energyStore');
+        const store = useEnergyStore.getState();
+        const found = store.appliances.find((a) => a.name.toLowerCase().includes(query));
+        if (found) {
+          const shouldTurnOn = action === 'on';
+          if (found.isActive !== shouldTurnOn) {
+            await store.toggleAppliance(found.id);
+          }
+          await speakText(`Turned ${action} ${found.name}`);
+          return;
+        }
+      } catch {}
+      await speakText(`Turning ${action} ${params[3]}`);
     },
     description: 'Control appliance',
   }],
   ['check-savings', {
     pattern: /\bhow much (have I |did I )?save(d)?\b|\bwhat(['’]s| is) my savings\b/i,
     action: async () => {
+      try {
+        const { useEnergyStore } = await import('../store/energyStore');
+        const dashboard = useEnergyStore.getState().dashboardData;
+        if (dashboard) {
+          const co2 = dashboard.totalCO2Saved.toFixed(1);
+          const trees = dashboard.treesEquivalent.toFixed(1);
+          await speakText(`You have saved ${co2} kilograms of CO2, equal to ${trees} trees planted`);
+          return;
+        }
+      } catch {}
       await speakText('Checking your energy savings');
     },
     description: 'Check total savings',
@@ -129,8 +204,29 @@ const DEFAULT_COMMANDS: ReadonlyArray<[string, VoiceCommandHandler]> = [
   ['create-challenge', {
     pattern: /\bcreate( a)? challenge( to)?( save)?( energy)? (\d+)/i,
     action: async (params) => {
-      const amount = params[5];
-      await speakText(`Creating challenge to save ${amount} kilowatt hours`);
+      const amount = Number(params[5]);
+      try {
+        const { useEnergyStore } = await import('../store/energyStore');
+        if (amount > 0) {
+          const now = new Date();
+          const end = new Date();
+          end.setDate(now.getDate() + 14);
+          await useEnergyStore.getState().addChallenge({
+            title: `Save ${amount} kWh Challenge`,
+            description: `Reduce monthly usage by ${amount} kWh`,
+            type: 'energy',
+            target: amount,
+            duration: 14,
+            startDate: now.toISOString(),
+            endDate: end.toISOString(),
+            reward: '100 points & Eco Saver badge',
+            createdBy: 'self',
+          });
+          await speakText(`Created 14-day challenge to save ${amount} kilowatt hours`);
+          return;
+        }
+      } catch {}
+      await speakText(`Creating challenge to save ${params[5]} kilowatt hours`);
     },
     description: 'Create new challenge',
   }],
