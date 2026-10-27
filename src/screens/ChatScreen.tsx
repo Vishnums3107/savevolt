@@ -99,9 +99,11 @@ interface MessageItemProps {
   s: Styles;
   onSuggestion: (text: string) => void;
   onSpeak: (text: string) => void;
+  onConfirmAction?: (message: ChatMessage) => void;
+  onDismissAction?: (message: ChatMessage) => void;
 }
 
-const MessageItem = memo(function MessageItem({ message, s, onSuggestion, onSpeak }: MessageItemProps) {
+const MessageItem = memo(function MessageItem({ message, s, onSuggestion, onSpeak, onConfirmAction, onDismissAction }: MessageItemProps) {
   const isUser = message.isUser;
   const isGemini = message.source === 'gemini';
   const isSystem = message.source === 'system';
@@ -139,6 +141,53 @@ const MessageItem = memo(function MessageItem({ message, s, onSuggestion, onSpea
         <Text style={[s.bubbleTxt, isUser ? s.userTxt : s.botTxt, isSystem && s.systemTxt]}>
           {message.text}
         </Text>
+
+        {message.action && (
+          <View style={s.actionCard}>
+            <View style={s.actionCardHeader}>
+              <Icon
+                name={message.action.done ? 'check-decagram' : 'lightning-bolt-circle'}
+                size={18}
+                color={message.action.done ? '#059669' : '#d97706'}
+              />
+              <Text style={[s.actionCardTitle, message.action.done && s.actionCardTitleDone]}>
+                {message.action.label}
+              </Text>
+            </View>
+            <Text style={s.actionCardDesc}>
+              {((message.action.payload as any)?.description) || message.action.label}
+            </Text>
+            {message.action.done ? (
+              <View style={s.actionDoneRow}>
+                <Icon name="check-bold" size={12} color="#059669" />
+                <Text style={s.actionDoneText}>Action Executed Successfully</Text>
+              </View>
+            ) : (
+              <View style={s.actionBtnRow}>
+                {onConfirmAction && (
+                  <TouchableOpacity
+                    style={s.confirmActionBtn}
+                    onPress={() => onConfirmAction(message)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Confirm ${message.action.label}`}
+                  >
+                    <Text style={s.confirmActionBtnText}>✓ Confirm Action</Text>
+                  </TouchableOpacity>
+                )}
+                {onDismissAction && (
+                  <TouchableOpacity
+                    style={s.dismissActionBtn}
+                    onPress={() => onDismissAction(message)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Dismiss action"
+                  >
+                    <Text style={s.dismissActionBtnText}>✕ Dismiss</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+          </View>
+        )}
       </View>
 
       {message.suggestions && message.suggestions.length > 0 && (
@@ -226,7 +275,25 @@ const ChatScreen = ({ navigation }: ChatScreenProps) => {
     usageRecords,
     weatherData,
     goals,
-  } = useEnergy('appliances', 'tips', 'settings', 'updateSettings', 'usageRecords', 'weatherData', 'goals');
+    reminders,
+    bills,
+    updateAppliance,
+    addGoal,
+    addReminder,
+  } = useEnergy(
+    'appliances',
+    'tips',
+    'settings',
+    'updateSettings',
+    'usageRecords',
+    'weatherData',
+    'goals',
+    'reminders',
+    'bills',
+    'updateAppliance',
+    'addGoal',
+    'addReminder'
+  );
 
   const { colors, isDark } = useTheme();
   const s = useThemedStyles(createStyles);
@@ -287,13 +354,88 @@ const ChatScreen = ({ navigation }: ChatScreenProps) => {
     ]);
   }, []);
 
-  const addBotMessage = useCallback((text: string, suggestions?: string[], source: 'gemini' | 'local' | 'system' = 'local') => {
+  const addBotMessage = useCallback((
+    text: string,
+    suggestions?: string[],
+    source: 'gemini' | 'local' | 'system' = 'local',
+    action?: ChatMessage['action']
+  ) => {
     setMessages((prev) => [
       ...prev,
-      { id: createMessageId(), text, isUser: false, timestamp: new Date().toISOString(), suggestions, source },
+      { id: createMessageId(), text, isUser: false, timestamp: new Date().toISOString(), suggestions, source, action },
     ]);
     if (voiceEnabled) speak(text);
   }, [voiceEnabled]);
+  const handleConfirmAction = useCallback(async (msg: ChatMessage) => {
+    if (!msg.action || msg.action.done) return;
+    const { type, payload } = msg.action;
+
+    try {
+      if (type === 'toggle_appliance' && payload?.applianceId) {
+        await updateAppliance(payload.applianceId as string, { isActive: payload.isActive as boolean });
+        setMessages((prev) =>
+          prev.map((m) => (m.id === msg.id && m.action ? { ...m, action: { ...m.action, done: true } } : m))
+        );
+        addBotMessage(
+          `✓ Confirmed! Switched ${payload.isActive ? 'on' : 'off'} ${payload.applianceName || 'appliance'}. Your active power load has been updated.`,
+          undefined,
+          'system'
+        );
+      } else if (type === 'update_hours' && payload?.applianceId) {
+        await updateAppliance(payload.applianceId as string, { hoursPerDay: payload.hours as number });
+        setMessages((prev) =>
+          prev.map((m) => (m.id === msg.id && m.action ? { ...m, action: { ...m.action, done: true } } : m))
+        );
+        addBotMessage(
+          `✓ Confirmed! Set ${payload.applianceName || 'appliance'} runtime to ${payload.hours} hours/day.`,
+          undefined,
+          'system'
+        );
+      } else if (type === 'create_goal' && payload?.target) {
+        const deadline = new Date();
+        deadline.setDate(deadline.getDate() + 30);
+        await addGoal({
+          type: (payload.type as any) || 'consumption',
+          target: payload.target as number,
+          deadline: deadline.toISOString(),
+        });
+        setMessages((prev) =>
+          prev.map((m) => (m.id === msg.id && m.action ? { ...m, action: { ...m.action, done: true } } : m))
+        );
+        addBotMessage(
+          `✓ Confirmed! Created new monthly goal to save ${payload.target} kWh. Track it in your Goals tab!`,
+          undefined,
+          'system'
+        );
+      } else if (type === 'create_reminder' && payload?.time) {
+        await addReminder({
+          title: (payload.title as string) || 'Off-Peak Routine',
+          message: 'Time to check appliances and save energy!',
+          time: payload.time as string,
+          days: [1, 2, 3, 4, 5],
+          isActive: true,
+        });
+        setMessages((prev) =>
+          prev.map((m) => (m.id === msg.id && m.action ? { ...m, action: { ...m.action, done: true } } : m))
+        );
+        addBotMessage(
+          `✓ Confirmed! Scheduled daily energy reminder for ${payload.time}.`,
+          undefined,
+          'system'
+        );
+      }
+    } catch (error) {
+      console.error('Failed to execute assistant action:', error);
+      Alert.alert('Action Failed', error instanceof Error ? error.message : 'Could not perform this action.');
+    }
+  }, [addBotMessage, addGoal, addReminder, updateAppliance]);
+
+  const handleDismissAction = useCallback((msg: ChatMessage) => {
+    setMessages((prev) =>
+      prev.map((m) => (m.id === msg.id ? { ...m, action: undefined } : m))
+    );
+  }, []);
+
 
   const handleSpeakText = useCallback((text: string) => {
     speak(text);
@@ -373,15 +515,32 @@ const ChatScreen = ({ navigation }: ChatScreenProps) => {
 
     if (!mountedRef.current) return;
 
-    const fallback = generateChatbotResponse(text, appliances, tips);
+    const fallback = generateChatbotResponse(text, appliances, tips, {
+      appliances,
+      tips,
+      usageRecords,
+      electricityRate: settings.electricityRate,
+      currency: settings.currency,
+      co2Factor: settings.co2Factor,
+      weatherLocation: settings.weatherLocation,
+      weatherData: weatherData ? {
+        temperature: weatherData.temperature,
+        condition: weatherData.condition,
+        season: weatherData.season,
+      } : undefined,
+      goals,
+      reminders,
+      bills,
+    });
     const response = geminiReply?.text || fallback.response;
     const suggestions = geminiReply?.suggestions?.length ? geminiReply.suggestions : fallback.suggestions;
     const source: 'gemini' | 'local' = geminiReply ? 'gemini' : 'local';
+    const action = !geminiReply ? fallback.action : undefined;
 
     const timer = setTimeout(() => {
       replyTimers.current.delete(timer);
       setPendingReplies((count) => Math.max(0, count - 1));
-      addBotMessage(response, suggestions, source);
+      addBotMessage(response, suggestions, source, action);
     }, REPLY_DELAY_MS);
     replyTimers.current.add(timer);
   }, [addBotMessage, addUserMessage, appliances, geminiApiKey, goals, messages, navigation, settings.co2Factor, settings.currency, settings.electricityRate, settings.weatherLocation, tips, usageRecords, weatherData]);
@@ -567,6 +726,8 @@ const ChatScreen = ({ navigation }: ChatScreenProps) => {
             s={s}
             onSuggestion={sendMessage}
             onSpeak={handleSpeakText}
+            onConfirmAction={handleConfirmAction}
+            onDismissAction={handleDismissAction}
           />
         ))}
         {pendingReplies > 0 && <TypingIndicator s={s} isGemini={hasGeminiKey} />}
@@ -813,6 +974,80 @@ const createStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   msgList: { flex: 1 },
   msgContent: { padding: Spacing.page, paddingBottom: 16 },
   msgWrapper: { marginBottom: 12 },
+  actionCard: {
+    marginTop: Spacing.sm,
+    backgroundColor: c.card,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    borderWidth: 1.5,
+    borderColor: c.primaryLight,
+  },
+  actionCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  actionCardTitle: {
+    ...Typography.h3,
+    fontSize: 14,
+    color: c.text,
+    marginLeft: 6,
+  },
+  actionCardTitleDone: {
+    color: c.textSecondary,
+    textDecorationLine: 'line-through',
+  },
+  actionCardDesc: {
+    ...Typography.bodySmall,
+    color: c.textSecondary,
+    marginBottom: Spacing.sm,
+  },
+  actionDoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#05966918',
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    borderRadius: Radius.sm,
+    alignSelf: 'flex-start',
+  },
+  actionDoneText: {
+    ...Typography.labelSmall,
+    color: '#059669',
+    fontWeight: '700',
+    marginLeft: 4,
+  },
+  actionBtnRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+  },
+  confirmActionBtn: {
+    backgroundColor: c.primary,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 8,
+    borderRadius: Radius.pill,
+    alignItems: 'center',
+    flex: 1,
+  },
+  confirmActionBtnText: {
+    ...Typography.labelSmall,
+    color: c.onPrimary,
+    fontWeight: '700',
+  },
+  dismissActionBtn: {
+    backgroundColor: c.background,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 8,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: c.border,
+    alignItems: 'center',
+  },
+  dismissActionBtnText: {
+    ...Typography.labelSmall,
+    color: c.textSecondary,
+  },
   bubble: { maxWidth: '85%', padding: 14, borderRadius: Radius.lg },
   userBubble: {
     alignSelf: 'flex-end',

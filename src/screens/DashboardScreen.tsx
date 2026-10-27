@@ -22,7 +22,7 @@ import { SkeletonCard } from '../components/Skeleton';
 
 const W = Dimensions.get('window').width;
 const CHART_WIDTH = W - Spacing.page * 2 - Spacing.lg * 2;
-const REDUCTION_OPTIONS = [10, 20, 30];
+const REDUCTION_OPTIONS = [5, 10, 15, 20, 30];
 
 /** '#RRGGBB' → rgba(); chart-kit takes its colors as opacity functions. */
 const withOpacity = (hex: string, opacity: number) => {
@@ -34,9 +34,9 @@ const withOpacity = (hex: string, opacity: number) => {
 
 const DashboardScreen = ({ navigation }: any) => {
   const {
-    dashboardData, settings, loadDemoData, weatherData, isWeatherLoading, refreshWeatherData, appliances, households, activeHouseholdId,
+    dashboardData, settings, loadDemoData, weatherData, isWeatherLoading, refreshWeatherData, appliances, households, activeHouseholdId, toggleAppliance, goals,
   } = useEnergy(
-    'dashboardData', 'settings', 'loadDemoData', 'weatherData', 'isWeatherLoading', 'refreshWeatherData', 'appliances', 'households', 'activeHouseholdId',
+    'dashboardData', 'settings', 'loadDemoData', 'weatherData', 'isWeatherLoading', 'refreshWeatherData', 'appliances', 'households', 'activeHouseholdId', 'toggleAppliance', 'goals',
   );
   const { colors } = useTheme();
   const s = useThemedStyles(createStyles);
@@ -48,6 +48,20 @@ const DashboardScreen = ({ navigation }: any) => {
   const categories = useMemo(() => dashboardData?.consumptionByCategory ?? [], [dashboardData]);
   const consumers = useMemo(() => dashboardData?.topConsumers ?? [], [dashboardData]);
   const activeDeviceCount = useMemo(() => appliances.filter((item) => item.isActive).length, [appliances]);
+
+  const primaryGoal = useMemo(() => {
+    return goals?.find((g) => !g.isAchieved && (g as any).isActive !== false) || null;
+  }, [goals]);
+
+  const currentActiveWatts = useMemo(() => {
+    return appliances
+      .filter((item) => item.isActive)
+      .reduce((sum, item) => sum + (item.powerRating * (item.quantity || 1)), 0);
+  }, [appliances]);
+
+  const currentCostPerHour = useMemo(() => {
+    return (currentActiveWatts / 1000) * (settings.electricityRate || 0.15);
+  }, [currentActiveWatts, settings.electricityRate]);
 
   const pieData = useMemo(() => categories.map((item, i) => ({
     name: item.category,
@@ -182,6 +196,21 @@ const DashboardScreen = ({ navigation }: any) => {
           <Text style={s.heroSub}>{costText} estimated cost</Text>
         </View>
 
+        {/* Live Load Efficiency Aura Pill */}
+        <View style={s.efficiencyBadge}>
+          <View style={[
+            s.efficiencyDot,
+            currentActiveWatts === 0 ? s.dotIdle :
+            currentActiveWatts <= 500 ? s.dotEco :
+            currentActiveWatts <= 1500 ? s.dotNormal : s.dotHigh,
+          ]} />
+          <Text style={s.efficiencyText}>
+            {currentActiveWatts === 0 ? '💤 Standby (0 W load)' :
+             currentActiveWatts <= 500 ? '🌱 Eco Flow (< 500 W)' :
+             currentActiveWatts <= 1500 ? '⚡ Balanced Load' : '🔥 Heavy Power Spike'}
+          </Text>
+        </View>
+
         {/* Glowing metric strip */}
         <View style={s.metricStrip}>
           <View style={s.metricPill} accessible accessibilityLabel={`Carbon emissions: ${co2Text}`}>
@@ -223,6 +252,174 @@ const DashboardScreen = ({ navigation }: any) => {
             <Text style={s.statLabel}>{m.label}</Text>
           </View>
         ))}
+      </View>
+
+      {/* ── Live Power Strip ── */}
+      <View style={s.livePowerBanner}>
+        <View style={s.livePulseContainer}>
+          <View style={s.livePulseDot} />
+        </View>
+        <View style={s.livePowerInfo}>
+          <Text style={s.livePowerTitle}>
+            Live Load: <Text style={s.livePowerHighlight}>{currentActiveWatts} W</Text>
+          </Text>
+          <Text style={s.livePowerSub}>
+            ~{settings.currency}{currentCostPerHour.toFixed(2)}/hr · {activeDeviceCount} active devices
+          </Text>
+        </View>
+        <AccessibleTouchable
+          label="Open Smart Plugs & Hardware Control"
+          style={s.liveAuditBtn}
+          onPress={() => navigation.navigate('Track', { screen: 'SmartHome', initial: false })}
+        >
+          <Text style={s.liveAuditBtnText}>Plugs ›</Text>
+        </AccessibleTouchable>
+      </View>
+
+      {/* ── Active Appliance Quick Controls ── */}
+      {appliances.length > 0 && (
+        <View style={s.quickDevicesSection}>
+          <View style={s.sectionHeaderRow}>
+            <Text style={s.quickSectionTitle}>LIVE APPLIANCE SWITCHES</Text>
+            <Text style={s.quickDeviceHint}>Tap to toggle load</Text>
+          </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={s.quickDeviceList}
+          >
+            {appliances.map((app) => {
+              const watts = app.powerRating * (app.quantity || 1);
+              return (
+                <AccessibleTouchable
+                  key={app.id}
+                  label={`${app.name}, ${watts} Watts, ${app.isActive ? 'currently on' : 'currently off'}`}
+                  hint="Toggles this device and recalculates live load"
+                  style={[s.quickDeviceCard, app.isActive ? s.quickDeviceCardActive : s.quickDeviceCardInactive]}
+                  onPress={() => toggleAppliance(app.id)}
+                >
+                  <View style={s.quickDeviceTop}>
+                    <Text style={s.quickDeviceIcon}>
+                      {app.category === 'Cooling' ? '❄️' :
+                       app.category === 'Heating' ? '🔥' :
+                       app.category === 'Kitchen' ? '🍳' :
+                       app.category === 'Lighting' ? '💡' :
+                       app.category === 'Entertainment' ? '📺' :
+                       app.category === 'Laundry' ? '🧺' : '⚡'}
+                    </Text>
+                    <View style={[s.quickStatusDot, app.isActive ? s.statusDotOn : s.statusDotOff]} />
+                  </View>
+                  <Text style={s.quickDeviceName} numberOfLines={1}>{app.name}</Text>
+                  <Text style={s.quickDeviceWatts}>{watts} W</Text>
+                  <View style={[s.quickToggleBadge, app.isActive ? s.toggleBadgeOn : s.toggleBadgeOff]}>
+                    <Text style={[s.quickToggleText, app.isActive ? s.toggleTextOn : s.toggleTextOff]}>
+                      {app.isActive ? '● ON' : '○ OFF'}
+                    </Text>
+                  </View>
+                </AccessibleTouchable>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* ── Active Goal Progress Card ── */}
+      {primaryGoal && (
+        <View style={s.activeGoalCard}>
+          <View style={s.goalHeaderRow}>
+            <View style={s.goalHeaderLeft}>
+              <Text style={s.goalTag}>ACTIVE TARGET</Text>
+              <Text style={s.goalTitle} numberOfLines={1}>{primaryGoal.title || `${primaryGoal.type.toUpperCase()} GOAL`}</Text>
+            </View>
+            <AccessibleTouchable
+              label="View all goals"
+              onPress={() => navigation.navigate('Goals', { screen: 'GoalsList', initial: false })}
+            >
+              <Text style={s.goalViewAll}>Manage ›</Text>
+            </AccessibleTouchable>
+          </View>
+
+          <View style={s.goalProgressTrack}>
+            <View
+              style={[
+                s.goalProgressFill,
+                {
+                  width: `${Math.min(100, Math.round(((primaryGoal.currentValue || 0) / (primaryGoal.target || 1)) * 100))}%`,
+                  backgroundColor: (primaryGoal.currentValue || 0) > (primaryGoal.target || 1) ? '#ef4444' : colors.primary,
+                },
+              ]}
+            />
+          </View>
+
+          <View style={s.goalMetricsRow}>
+            <Text style={s.goalMetricText}>
+              Current: <Text style={s.goalMetricBold}>{primaryGoal.type === 'cost' ? `${settings.currency}${(primaryGoal.currentValue || 0).toFixed(2)}` : `${(primaryGoal.currentValue || 0).toFixed(1)} kWh`}</Text>
+            </Text>
+            <Text style={s.goalMetricText}>
+              Target: <Text style={s.goalMetricBold}>{primaryGoal.type === 'cost' ? `${settings.currency}${primaryGoal.target.toFixed(2)}` : `${primaryGoal.target.toFixed(1)} kWh`}</Text>
+            </Text>
+          </View>
+        </View>
+      )}
+
+      {/* ── Quick Operations Hub ── */}
+      <View style={s.quickHubSection}>
+        <Text style={s.quickHubTitle}>QUICK ACTIONS</Text>
+        <View style={s.quickHubGrid}>
+          <AccessibleTouchable
+            label="Daily Log: Confirm device run times"
+            style={s.quickHubTile}
+            onPress={() => navigation.navigate('Track', { screen: 'DailyLog', initial: false })}
+          >
+            <Text style={s.quickHubEmoji}>⚡</Text>
+            <Text style={s.quickHubLabel}>Log Today</Text>
+          </AccessibleTouchable>
+
+          <AccessibleTouchable
+            label="Smart Plugs: Control plugs and live telemetry"
+            style={s.quickHubTile}
+            onPress={() => navigation.navigate('Track', { screen: 'SmartHome', initial: false })}
+          >
+            <Text style={s.quickHubEmoji}>🔌</Text>
+            <Text style={s.quickHubLabel}>Smart Plugs</Text>
+          </AccessibleTouchable>
+
+          <AccessibleTouchable
+            label="Action Plan: Ranked savings recommendations"
+            style={s.quickHubTile}
+            onPress={() => navigation.navigate('Insights', { screen: 'Recommendations', initial: false })}
+          >
+            <Text style={s.quickHubEmoji}>💡</Text>
+            <Text style={s.quickHubLabel}>Action Plan</Text>
+          </AccessibleTouchable>
+
+          <AccessibleTouchable
+            label="Reports and Utility Bill Entry"
+            style={s.quickHubTile}
+            onPress={() => navigation.navigate('Insights', { screen: 'Reports', initial: false })}
+          >
+            <Text style={s.quickHubEmoji}>📊</Text>
+            <Text style={s.quickHubLabel}>Reports & Bills</Text>
+          </AccessibleTouchable>
+
+          <AccessibleTouchable
+            label="Challenges: Save energy habits and compete"
+            style={s.quickHubTile}
+            onPress={() => navigation.navigate('Goals', { screen: 'Challenges', initial: false })}
+          >
+            <Text style={s.quickHubEmoji}>🎯</Text>
+            <Text style={s.quickHubLabel}>Challenges</Text>
+          </AccessibleTouchable>
+
+          <AccessibleTouchable
+            label="Energy Assistant: Data-driven offline AI"
+            style={s.quickHubTile}
+            onPress={() => navigation.navigate('Account', { screen: 'Chat', initial: false })}
+          >
+            <Text style={s.quickHubEmoji}>🤖</Text>
+            <Text style={s.quickHubLabel}>Assistant</Text>
+          </AccessibleTouchable>
+        </View>
       </View>
 
       {/* ── Weather Widget ── */}
@@ -330,7 +527,7 @@ const DashboardScreen = ({ navigation }: any) => {
           <View style={[s.section, s.insightSection]}>
             <LinearGradient colors={colors.heroGradient} style={s.insightCard}>
               <Text style={s.insightEmoji} accessible={false} importantForAccessibility="no">🌱</Text>
-              <Text style={s.insightTitle} accessibilityRole="header">Savings calculator</Text>
+              <Text style={s.insightTitle} accessibilityRole="header">Savings Calculator</Text>
               <View style={s.reductionChoices} accessibilityRole="radiogroup" accessibilityLabel="Usage reduction">
                 {REDUCTION_OPTIONS.map((percent) => {
                   const checked = reductionPercent === percent;
@@ -351,10 +548,24 @@ const DashboardScreen = ({ navigation }: any) => {
               </View>
               <Text style={s.insightBody} accessibilityLiveRegion="polite">
                 Reducing usage by {reductionPercent}% would save{' '}
-                <Text style={s.insightHighlight}>{formatEnergy(totalEnergyConsumed * reductionPercent / 100)}</Text>,{' '}
-                <Text style={s.insightHighlight}>{formatCost(totalCost * reductionPercent / 100, settings.currency)}</Text>, and{' '}
-                <Text style={s.insightHighlight}>{formatCO2(totalCO2Saved * reductionPercent / 100)}</Text> each month.
+                <Text style={s.insightHighlight}>{formatEnergy(totalEnergyConsumed * reductionPercent / 100)}</Text> ({' '}
+                <Text style={s.insightHighlight}>{formatCost(totalCost * reductionPercent / 100, settings.currency)}</Text> ) monthly, and{' '}
+                <Text style={s.insightHighlight}>{formatCost((totalCost * reductionPercent / 100) * 12, settings.currency)}</Text> per year.
               </Text>
+
+              <View style={s.insightAnnualPill}>
+                <Text style={s.insightAnnualTxt}>
+                  🌳 Offsets {((treesEquivalent * reductionPercent / 100) * 12).toFixed(1)} trees/year · 🚗 {formatCO2((totalCO2Saved * reductionPercent / 100) * 12)} CO₂ prevented
+                </Text>
+              </View>
+
+              <AccessibleTouchable
+                label="View action plan recommendations"
+                style={s.insightActionBtn}
+                onPress={() => navigation.navigate('Insights', { screen: 'Recommendations', initial: false })}
+              >
+                <Text style={s.insightActionBtnTxt}>Explore Action Plan →</Text>
+              </AccessibleTouchable>
             </LinearGradient>
           </View>
         </>
@@ -393,7 +604,33 @@ const createStyles = (c: ThemeColors) => {
     heroLabel: { ...Typography.overline, color: c.primary, marginBottom: 6 },
     heroSummary: { alignItems: 'center' },
     heroValue: { ...Typography.displayLarge, color: c.textOnDark, marginBottom: 4 },
-    heroSub: { ...Typography.bodyMedium, color: c.textOnDarkSub, marginBottom: 20 },
+    heroSub: { ...Typography.bodyMedium, color: c.textOnDarkSub, marginBottom: 12 },
+    efficiencyBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      backgroundColor: 'rgba(255,255,255,0.08)',
+      paddingHorizontal: 12,
+      paddingVertical: 5,
+      borderRadius: Radius.pill,
+      marginBottom: 16,
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.12)',
+    },
+    efficiencyDot: {
+      width: 7,
+      height: 7,
+      borderRadius: 4,
+    },
+    dotIdle: { backgroundColor: '#94a3b8' },
+    dotEco: { backgroundColor: '#10b981' },
+    dotNormal: { backgroundColor: '#3b82f6' },
+    dotHigh: { backgroundColor: '#ef4444' },
+    efficiencyText: {
+      ...Typography.labelSmall,
+      color: c.textOnDark,
+      fontWeight: '600',
+    },
 
     metricStrip: {
       flexDirection: 'row', alignItems: 'center',
@@ -490,6 +727,273 @@ const createStyles = (c: ThemeColors) => {
     reductionChoiceTextActive: { color: c.onPrimary },
     insightBody: { ...Typography.bodyMedium, color: c.textOnDarkSub, textAlign: 'center', lineHeight: 22 },
     insightHighlight: { color: c.primary, fontWeight: '700' },
+    insightAnnualPill: {
+      marginTop: 14,
+      backgroundColor: 'rgba(255,255,255,0.08)',
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+      borderRadius: Radius.pill,
+    },
+    insightAnnualTxt: { ...Typography.labelSmall, color: c.textOnDarkSub, textAlign: 'center' },
+    insightActionBtn: {
+      marginTop: 16,
+      backgroundColor: c.primary,
+      paddingHorizontal: 22,
+      paddingVertical: 12,
+      borderRadius: Radius.pill,
+      ...Shadows.md,
+    },
+    insightActionBtnTxt: { ...Typography.label, color: c.onPrimary, fontWeight: '700' },
+
+    /* Live Power Banner */
+    livePowerBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: c.card,
+      marginHorizontal: Spacing.page,
+      marginTop: 14,
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      borderRadius: Radius.card,
+      borderWidth: 1,
+      borderColor: c.borderLight,
+      ...Shadows.sm,
+    },
+    livePulseContainer: {
+      marginRight: 12,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    livePulseDot: {
+      width: 10,
+      height: 10,
+      borderRadius: 5,
+      backgroundColor: c.success,
+    },
+    livePowerInfo: {
+      flex: 1,
+    },
+    livePowerTitle: {
+      ...Typography.label,
+      color: c.text,
+    },
+    livePowerHighlight: {
+      color: c.primaryText,
+      fontWeight: '800',
+    },
+    livePowerSub: {
+      ...Typography.bodySmall,
+      color: c.textSecondary,
+      marginTop: 2,
+    },
+    liveAuditBtn: {
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: Radius.pill,
+      backgroundColor: c.borderLight,
+    },
+    liveAuditBtnText: {
+      ...Typography.labelSmall,
+      color: c.text,
+      fontWeight: '700',
+    },
+
+    /* Quick Operations Hub */
+    quickHubSection: {
+      marginTop: 22,
+      paddingHorizontal: Spacing.page,
+    },
+    quickHubTitle: {
+      ...Typography.overline,
+      color: c.textSecondary,
+      marginBottom: 10,
+      letterSpacing: 1.2,
+    },
+    quickHubGrid: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 10,
+      justifyContent: 'space-between',
+    },
+    quickHubTile: {
+      width: '31%',
+      backgroundColor: c.card,
+      borderRadius: Radius.md,
+      paddingVertical: 12,
+      paddingHorizontal: 8,
+      alignItems: 'center',
+      borderWidth: 1,
+      borderColor: c.borderLight,
+      ...Shadows.sm,
+    },
+    quickHubEmoji: {
+      fontSize: 22,
+      marginBottom: 4,
+    },
+    quickHubLabel: {
+      ...Typography.labelSmall,
+      color: c.text,
+      textAlign: 'center',
+      fontSize: 11,
+      fontWeight: '600',
+    },
+
+    /* Quick Devices */
+    quickDevicesSection: {
+      marginTop: 18,
+      paddingHorizontal: Spacing.page,
+    },
+    sectionHeaderRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 10,
+    },
+    quickSectionTitle: {
+      ...Typography.overline,
+      color: c.textSecondary,
+      letterSpacing: 1.2,
+    },
+    quickDeviceHint: {
+      fontSize: 11,
+      color: c.textMuted,
+      fontWeight: '500',
+    },
+    quickDeviceList: {
+      gap: 10,
+      paddingRight: Spacing.page,
+    },
+    quickDeviceCard: {
+      width: 110,
+      backgroundColor: c.card,
+      borderRadius: Radius.md,
+      padding: 10,
+      borderWidth: 1,
+      ...Shadows.sm,
+    },
+    quickDeviceCardActive: {
+      borderColor: c.primary,
+      backgroundColor: c.card,
+    },
+    quickDeviceCardInactive: {
+      borderColor: c.borderLight,
+      opacity: 0.85,
+    },
+    quickDeviceTop: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 6,
+    },
+    quickDeviceIcon: {
+      fontSize: 20,
+    },
+    quickStatusDot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+    },
+    statusDotOn: {
+      backgroundColor: c.success,
+    },
+    statusDotOff: {
+      backgroundColor: c.textMuted,
+    },
+    quickDeviceName: {
+      ...Typography.labelSmall,
+      color: c.text,
+      fontWeight: '700',
+      marginBottom: 2,
+    },
+    quickDeviceWatts: {
+      fontSize: 11,
+      color: c.textSecondary,
+      marginBottom: 8,
+    },
+    quickToggleBadge: {
+      borderRadius: Radius.pill,
+      paddingVertical: 3,
+      alignItems: 'center',
+    },
+    toggleBadgeOn: {
+      backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    },
+    toggleBadgeOff: {
+      backgroundColor: c.borderLight,
+    },
+    quickToggleText: {
+      fontSize: 10,
+      fontWeight: '800',
+    },
+    toggleTextOn: {
+      color: c.primaryText,
+    },
+    toggleTextOff: {
+      color: c.textMuted,
+    },
+
+    /* Active Goal Card */
+    activeGoalCard: {
+      marginTop: 18,
+      marginHorizontal: Spacing.page,
+      backgroundColor: c.card,
+      borderRadius: Radius.card,
+      padding: Spacing.md,
+      borderWidth: 1,
+      borderColor: c.borderLight,
+      ...Shadows.sm,
+    },
+    goalHeaderRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 10,
+    },
+    goalHeaderLeft: {
+      flex: 1,
+      marginRight: 10,
+    },
+    goalTag: {
+      ...Typography.overline,
+      color: c.primaryText,
+      fontSize: 10,
+      letterSpacing: 1,
+    },
+    goalTitle: {
+      ...Typography.label,
+      color: c.text,
+      fontWeight: '700',
+      marginTop: 2,
+    },
+    goalViewAll: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: c.primaryText,
+    },
+    goalProgressTrack: {
+      height: 8,
+      backgroundColor: c.borderLight,
+      borderRadius: 4,
+      overflow: 'hidden',
+      marginBottom: 8,
+    },
+    goalProgressFill: {
+      height: '100%',
+      borderRadius: 4,
+    },
+    goalMetricsRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    goalMetricText: {
+      fontSize: 11,
+      color: c.textSecondary,
+    },
+    goalMetricBold: {
+      fontWeight: '700',
+      color: c.text,
+    },
   });
 };
 

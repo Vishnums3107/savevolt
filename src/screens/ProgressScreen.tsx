@@ -11,8 +11,10 @@ import FocusAwareStatusBar from '../components/FocusAwareStatusBar';
 import { format, addDays } from 'date-fns';
 import { formatCO2, formatCost, formatEnergy } from '../utils/energy';
 import { Typography, Spacing, Radius, Shadows } from '../theme';
+import { levelFor, LEVELS } from '../utils/gamification';
 
 type GoalType = 'consumption' | 'cost' | 'co2';
+type GoalLevelTier = 1 | 2 | 3;
 
 const GOAL_TYPES: GoalType[] = ['consumption', 'cost', 'co2'];
 
@@ -23,8 +25,14 @@ const GOAL_TYPE_META: Record<GoalType, { icon: string; label: string; spoken: st
   co2: { icon: '🌍', label: 'CO₂', spoken: 'CO2' },
 };
 
+const GOAL_TIERS: { tier: GoalLevelTier; label: string; reductionPct: number; xp: number }[] = [
+  { tier: 1, label: 'L1: Novice (-10%)', reductionPct: 10, xp: 30 },
+  { tier: 2, label: 'L2: Saver (-20%)', reductionPct: 20, xp: 60 },
+  { tier: 3, label: 'L3: Hero (-30%)', reductionPct: 30, xp: 100 },
+];
+
 const ProgressScreen = () => {
-  const { streak, badges, goals, dashboardData, addGoal, deleteGoal, settings } = useEnergy(
+  const { streak, badges, goals, dashboardData, addGoal, deleteGoal, settings, points, awardPoints } = useEnergy(
     'streak',
     'badges',
     'goals',
@@ -32,6 +40,8 @@ const ProgressScreen = () => {
     'addGoal',
     'deleteGoal',
     'settings',
+    'points',
+    'awardPoints',
   );
   const { colors, isDark } = useTheme();
   const s = useThemedStyles(createStyles);
@@ -39,8 +49,11 @@ const ProgressScreen = () => {
   const [goalType, setGoalType] = useState<GoalType>('consumption');
   const [goalTarget, setGoalTarget] = useState('');
   const [goalDays, setGoalDays] = useState('30');
+  const [selectedTier, setSelectedTier] = useState<GoalLevelTier>(1);
   const currency = settings.currency;
 
+  const totalPoints = typeof points === 'number' ? points : (points?.total || 0);
+  const userLevel = useMemo(() => levelFor(totalPoints), [totalPoints]);
   const ctaGradient = useMemo(() => [colors.primary, colors.primaryDark], [colors]);
 
   const goalItems = useMemo(() => goals.map((goal) => {
@@ -73,17 +86,23 @@ const ProgressScreen = () => {
     { icon: '🌳', l: 'Trees Equivalent', v: `${dashboardData.treesEquivalent.toFixed(1)}` },
   ] : []), [dashboardData, currency]);
 
-  const suggestedTarget = useMemo(() => {
+  const getTierTarget = useCallback((tier: GoalLevelTier) => {
     if (!dashboardData) return goalType === 'cost' ? 25 : 50;
     const current = goalType === 'consumption'
       ? dashboardData.totalEnergyConsumed
       : goalType === 'cost'
         ? dashboardData.totalCost
         : dashboardData.totalCO2Saved;
-    return Math.max(0.1, current * 0.9);
+    const factor = tier === 1 ? 0.9 : tier === 2 ? 0.8 : 0.7;
+    return Math.max(0.1, current * factor);
   }, [dashboardData, goalType]);
 
-  const openGoalModal = useCallback(() => setShowGoalModal(true), []);
+  const openGoalModal = useCallback(() => {
+    setShowGoalModal(true);
+    const targetVal = getTierTarget(selectedTier);
+    setGoalTarget(targetVal.toFixed(1));
+  }, [getTierTarget, selectedTier]);
+
   const closeGoalModal = useCallback(() => setShowGoalModal(false), []);
 
   const handleCreateGoal = async () => {
@@ -101,8 +120,12 @@ const ProgressScreen = () => {
       type: goalType, target,
       deadline: addDays(new Date(), duration).toISOString(),
     });
+    if (awardPoints) {
+      const tierXp = GOAL_TIERS.find(t => t.tier === selectedTier)?.xp || 30;
+      await awardPoints(`goal-create-${Date.now()}`, 15, `Set ${GOAL_TIERS.find(t => t.tier === selectedTier)?.label} goal`);
+    }
     setShowGoalModal(false); setGoalTarget(''); setGoalDays('30');
-    Alert.alert('Goal Created!', 'Track your progress below.');
+    Alert.alert('Goal Created!', 'Track your progress and earn XP milestones below.');
   };
 
   const confirmDeleteGoal = useCallback((id: string, type: GoalType) => {
@@ -111,8 +134,6 @@ const ProgressScreen = () => {
       { text: 'Delete', style: 'destructive', onPress: () => deleteGoal(id) },
     ]);
   }, [deleteGoal]);
-
-  const applySuggestedTarget = () => setGoalTarget(suggestedTarget.toFixed(1));
 
   const unit = goalType === 'consumption' ? 'kWh' : goalType === 'cost' ? currency : 'kg';
   const keyboardAppearance = isDark ? 'dark' : 'light';
@@ -125,8 +146,39 @@ const ProgressScreen = () => {
       <FocusAwareStatusBar variant="hero" />
       <LinearGradient colors={colors.heroGradient} style={s.header}>
         <Text style={s.headerLabel}>YOUR JOURNEY</Text>
-        <Text style={s.headerTitle} accessibilityRole="header">Progress</Text>
+        <Text style={s.headerTitle} accessibilityRole="header">Progress & Levels</Text>
       </LinearGradient>
+
+      {/* Level Progression Hero */}
+      <View style={s.levelCard}>
+        <View style={s.levelHeaderRow}>
+          <View style={s.levelBadge}>
+            <Text style={s.levelBadgeIcon}>{userLevel.level >= 5 ? '👑' : userLevel.level >= 3 ? '⚡' : '🌱'}</Text>
+            <Text style={s.levelBadgeNumber}>L{userLevel.level}</Text>
+          </View>
+          <View style={s.levelInfoCol}>
+            <Text style={s.levelNameText}>{userLevel.name}</Text>
+            <Text style={s.levelPointsSub}>{totalPoints} total XP · {userLevel.next ? `${userLevel.next - totalPoints} XP to next level` : 'Max tier'}</Text>
+          </View>
+          <View style={s.levelRankPill}>
+            <Text style={s.levelRankText}>Tier {userLevel.level}</Text>
+          </View>
+        </View>
+
+        <View style={s.levelProgressWrapper}>
+          <View style={s.levelProgressBg}>
+            <View style={[s.levelProgressFill, { width: `${Math.round(userLevel.progress * 100)}%` }]} />
+          </View>
+          <View style={s.levelMilestoneRow}>
+            <Text style={s.levelMilestoneTxt}>
+              {userLevel.next
+                ? `Level ${userLevel.level + 1}: ${LEVELS[userLevel.level]?.name || 'Next'}`
+                : 'Volt Legend 🏆'}
+            </Text>
+            <Text style={s.levelPctTxt}>{Math.round(userLevel.progress * 100)}%</Text>
+          </View>
+        </View>
+      </View>
 
       {/* Streak Hero */}
       <View style={s.streakCard}>
@@ -307,18 +359,32 @@ const ProgressScreen = () => {
                 );
               })}
             </View>
+            <Text style={s.modalLabel}>Difficulty & XP Tier</Text>
+            <View style={s.tierRow}>
+              {GOAL_TIERS.map((t) => {
+                const active = selectedTier === t.tier;
+                return (
+                  <AccessibleTouchable
+                    key={t.tier}
+                    label={`${t.label}, earns ${t.xp} XP`}
+                    style={[s.tierBtn, active && s.tierBtnActive]}
+                    onPress={() => {
+                      setSelectedTier(t.tier);
+                      const targetVal = getTierTarget(t.tier);
+                      setGoalTarget(targetVal.toFixed(1));
+                    }}
+                  >
+                    <Text style={[s.tierBtnText, active && s.tierBtnTextActive]}>{t.label}</Text>
+                    <Text style={[s.tierXpText, active && s.tierXpTextActive]}>+{t.xp} XP</Text>
+                  </AccessibleTouchable>
+                );
+              })}
+            </View>
+
             <Text style={s.modalLabel}>Target ({unit})</Text>
             <TextInput style={s.modalInput} value={goalTarget} onChangeText={setGoalTarget}
               keyboardType="decimal-pad" placeholder="e.g., 50" placeholderTextColor={colors.textMuted}
               keyboardAppearance={keyboardAppearance} accessibilityLabel={`Target (${unit})`} />
-            <AccessibleTouchable
-              label={`Use a 10% reduction target: ${suggestedTarget.toFixed(1)}`}
-              hint="Fills in the target field"
-              style={s.suggestionButton}
-              onPress={applySuggestedTarget}
-            >
-              <Text style={s.suggestionText}>Use a 10% reduction target: {suggestedTarget.toFixed(1)}</Text>
-            </AccessibleTouchable>
             <Text style={s.modalLabel}>Duration (days)</Text>
             <TextInput style={s.modalInput} value={goalDays} onChangeText={setGoalDays}
               keyboardType="number-pad" placeholder="30" placeholderTextColor={colors.textMuted}
@@ -348,7 +414,96 @@ const createStyles = (c: ThemeColors) => {
     headerLabel: { ...Typography.overline, color: c.primary, marginBottom: 4 },
     headerTitle: { ...Typography.displaySmall, color: c.textOnDark },
 
-    streakCard: { marginHorizontal: Spacing.page, marginTop: -10, backgroundColor: c.card, borderRadius: Radius.xl, padding: Spacing.xxl, alignItems: 'center', ...Shadows.lg },
+    /* Level Progression Card */
+    levelCard: {
+      marginHorizontal: Spacing.page,
+      marginTop: -16,
+      marginBottom: 12,
+      backgroundColor: c.card,
+      borderRadius: Radius.xl,
+      padding: Spacing.lg,
+      borderWidth: 1.5,
+      borderColor: c.primary,
+      ...Shadows.md,
+    },
+    levelHeaderRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    levelBadge: {
+      width: 48,
+      height: 48,
+      borderRadius: 24,
+      backgroundColor: c.primarySoft,
+      justifyContent: 'center',
+      alignItems: 'center',
+      marginRight: 12,
+      borderWidth: 1.5,
+      borderColor: c.primary,
+    },
+    levelBadgeIcon: {
+      fontSize: 18,
+    },
+    levelBadgeNumber: {
+      ...Typography.labelSmall,
+      color: c.primaryText,
+      fontWeight: '800',
+      fontSize: 10,
+      marginTop: -2,
+    },
+    levelInfoCol: {
+      flex: 1,
+    },
+    levelNameText: {
+      ...Typography.h3,
+      color: c.text,
+    },
+    levelPointsSub: {
+      ...Typography.bodySmall,
+      color: c.textSecondary,
+      marginTop: 2,
+    },
+    levelRankPill: {
+      backgroundColor: c.primary,
+      borderRadius: Radius.pill,
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+    },
+    levelRankText: {
+      ...Typography.labelSmall,
+      color: c.onPrimary,
+      fontWeight: '700',
+    },
+    levelProgressWrapper: {
+      marginTop: 14,
+    },
+    levelProgressBg: {
+      height: 7,
+      backgroundColor: c.borderLight,
+      borderRadius: 4,
+      overflow: 'hidden',
+    },
+    levelProgressFill: {
+      height: '100%',
+      backgroundColor: c.primary,
+      borderRadius: 4,
+    },
+    levelMilestoneRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      marginTop: 6,
+    },
+    levelMilestoneTxt: {
+      ...Typography.labelSmall,
+      color: c.textSecondary,
+    },
+    levelPctTxt: {
+      ...Typography.labelSmall,
+      color: c.primaryText,
+      fontWeight: '700',
+    },
+
+    streakCard: { marginHorizontal: Spacing.page, marginTop: 4, backgroundColor: c.card, borderRadius: Radius.xl, padding: Spacing.xxl, alignItems: 'center', ...Shadows.lg },
     streakMain: { alignItems: 'center', marginBottom: 16 },
     streakNum: { ...Typography.displayLarge, color: c.primaryText, fontSize: 56 },
     streakUnit: { ...Typography.label, color: c.textSecondary },
@@ -365,7 +520,6 @@ const createStyles = (c: ThemeColors) => {
     sectionTitle: { ...Typography.h2, color: c.text, marginBottom: 14 },
     sectionTitleInline: { marginBottom: 0 },
     sectionCaption: { ...Typography.bodySmall, color: c.textSecondary, lineHeight: 18, marginTop: -8, marginBottom: 12 },
-    // 44pt touch target around the compact pill
     addBtnTarget: { alignItems: 'flex-end' },
     addBtn: { backgroundColor: c.primary, borderRadius: Radius.pill, paddingHorizontal: 16, paddingVertical: 8 },
     addBtnTxt: { ...Typography.labelSmall, color: c.onPrimary },
@@ -413,9 +567,14 @@ const createStyles = (c: ThemeColors) => {
     typeBtnActive: { borderColor: c.primary, backgroundColor: c.primarySoft },
     typeBtnTxt: { ...Typography.label, color: c.textSecondary },
     typeBtnTxtActive: { color: c.text, fontWeight: '700' },
+    tierRow: { flexDirection: 'column', gap: 6 },
+    tierBtn: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: Radius.sm, borderWidth: 1, borderColor: c.border, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+    tierBtnActive: { borderColor: c.primary, backgroundColor: c.primarySoft },
+    tierBtnText: { ...Typography.bodySmall, color: c.text },
+    tierBtnTextActive: { color: c.primaryText, fontWeight: '700' },
+    tierXpText: { ...Typography.labelSmall, color: c.textSecondary },
+    tierXpTextActive: { color: c.primaryText, fontWeight: '800' },
     modalInput: { backgroundColor: c.inputBg, borderRadius: Radius.sm, padding: 14, ...Typography.bodyLarge, color: c.text, borderWidth: 1, borderColor: c.border },
-    suggestionButton: { alignSelf: 'flex-start', paddingVertical: 6, marginBottom: 4 },
-    suggestionText: { ...Typography.labelSmall, color: c.primaryText },
     modalBtns: { flexDirection: 'row', gap: 12, marginTop: 24 },
     cancelBtn: { flex: 1, paddingVertical: 14, borderRadius: Radius.sm, backgroundColor: c.inputBg, alignItems: 'center' },
     cancelTxt: { ...Typography.label, color: c.text },

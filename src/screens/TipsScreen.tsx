@@ -1,5 +1,6 @@
-import React, { useCallback, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Alert, RefreshControl } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, Alert, RefreshControl, TextInput } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import LinearGradient from 'react-native-linear-gradient';
 import { useEnergy } from '../context/EnergyContext';
 import { useTheme, useThemedStyles, ThemeColors } from '../context/ThemeContext';
@@ -14,6 +15,10 @@ import { speakEnergyTip, stopSpeaking } from '../utils/voice';
 import { Typography, Spacing, Radius, Shadows } from '../theme';
 
 type Priority = EnergyTip['priority'];
+
+
+const CATEGORIES = ['All', 'Favorites', 'Cooling', 'Heating', 'Kitchen', 'Behavior', 'Lighting'] as const;
+type CategoryFilter = (typeof CATEGORIES)[number];
 
 const PRIORITY_GROUPS: { priority: Priority; title: string }[] = [
   { priority: 'high', title: 'High Priority' },
@@ -45,14 +50,55 @@ const TipsScreen = ({ navigation }: any) => {
   const s = useThemedStyles(createStyles);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<CategoryFilter>('All');
+  const [favorites, setFavorites] = useState<string[]>([]);
+
+  useEffect(() => {
+    AsyncStorage.getItem('@savevolt_favorite_tips')
+      .then((data) => {
+        if (data) setFavorites(JSON.parse(data));
+      })
+      .catch(() => {});
+  }, []);
+
+  const toggleFavorite = useCallback(async (tipId: string) => {
+    setFavorites((prev) => {
+      const next = prev.includes(tipId) ? prev.filter((id) => id !== tipId) : [...prev, tipId];
+      AsyncStorage.setItem('@savevolt_favorite_tips', JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }, []);
+
+  const filteredTips = useMemo(() => {
+    return tips.filter((tip) => {
+      // Category filter
+      if (selectedCategory === 'Favorites') {
+        if (!favorites.includes(tip.id)) return false;
+      } else if (selectedCategory !== 'All') {
+        if (tip.category.toLowerCase() !== selectedCategory.toLowerCase()) return false;
+      }
+
+      // Search filter
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        return (
+          tip.title.toLowerCase().includes(q) ||
+          tip.description.toLowerCase().includes(q) ||
+          tip.category.toLowerCase().includes(q)
+        );
+      }
+      return true;
+    });
+  }, [tips, selectedCategory, favorites, searchQuery]);
 
   const groups = useMemo(
     () =>
       PRIORITY_GROUPS.map((group) => ({
         ...group,
-        items: tips.filter((tip) => tip.priority === group.priority),
+        items: filteredTips.filter((tip) => tip.priority === group.priority),
       })).filter((group) => group.items.length > 0),
-    [tips],
+    [filteredTips],
   );
   const totalSavings = useMemo(() => tips.reduce((sum, tip) => sum + tip.potentialSavings, 0), [tips]);
 
@@ -108,6 +154,52 @@ const TipsScreen = ({ navigation }: any) => {
 
         {tips.length > 0 ? (
           <>
+        {/* Search & Category Filter */}
+        <View style={s.searchRow}>
+          <Text style={s.searchIcon}>🔍</Text>
+          <TextInput
+            style={s.searchInput}
+            placeholder="Search smart tips by appliance or habit..."
+            placeholderTextColor={colors.textMuted}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            clearButtonMode="while-editing"
+            accessibilityLabel="Search energy tips"
+          />
+          {searchQuery ? (
+            <AccessibleTouchable
+              label="Clear search"
+              style={s.clearBtn}
+              onPress={() => setSearchQuery('')}
+            >
+              <Text style={s.clearBtnText}>✕</Text>
+            </AccessibleTouchable>
+          ) : null}
+        </View>
+
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={s.filterRow}
+          contentContainerStyle={s.filterContent}
+        >
+          {CATEGORIES.map((cat) => {
+            const isSel = selectedCategory === cat;
+            const count = cat === 'All' ? tips.length : cat === 'Favorites' ? favorites.length : tips.filter(t => t.category.toLowerCase() === cat.toLowerCase()).length;
+            return (
+              <AccessibleTouchable
+                key={cat}
+                label={`Filter ${cat}`}
+                style={[s.filterChip, isSel && s.filterChipActive]}
+                onPress={() => setSelectedCategory(cat)}
+              >
+                <Text style={[s.filterChipText, isSel && s.filterChipTextActive]}>
+                  {cat === 'Favorites' ? '⭐ Favorites' : cat} ({count})
+                </Text>
+              </AccessibleTouchable>
+            );
+          })}
+        </ScrollView>
             {/* Summary */}
             <View
               style={s.summaryCard}
@@ -147,6 +239,13 @@ const TipsScreen = ({ navigation }: any) => {
                               <Text style={s.forYouTxt}>For You</Text>
                             </View>
                           )}
+                          <AccessibleTouchable
+                            label={favorites.includes(tip.id) ? `Remove ${tip.title} from favorites` : `Add ${tip.title} to favorites`}
+                            onPress={() => toggleFavorite(tip.id)}
+                            style={s.favBtn}
+                          >
+                            <Text style={s.favIcon}>{favorites.includes(tip.id) ? '⭐' : '☆'}</Text>
+                          </AccessibleTouchable>
                           <AccessibleTouchable
                             label={isSpeaking ? `Stop reading ${tip.title}` : `Read ${tip.title} aloud`}
                             hint={settings.voiceEnabled ? undefined : 'Voice is turned off. Enable it in Settings.'}
@@ -197,6 +296,67 @@ const createStyles = (c: ThemeColors) => {
     headerTitle: { ...Typography.displaySmall, color: c.textOnDark },
     body: { padding: Spacing.page },
     weather: { marginBottom: 14 },
+    searchRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: c.card,
+      borderRadius: Radius.card,
+      paddingHorizontal: Spacing.md,
+      marginBottom: Spacing.md,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    searchIcon: {
+      fontSize: 16,
+      marginRight: Spacing.sm,
+    },
+    searchInput: {
+      flex: 1,
+      ...Typography.bodyMedium,
+      color: c.text,
+      paddingVertical: Spacing.md,
+    },
+    clearBtn: {
+      padding: Spacing.xs,
+    },
+    clearBtnText: {
+      fontSize: 14,
+      color: c.textMuted,
+    },
+    filterRow: {
+      marginBottom: Spacing.lg,
+    },
+    filterContent: {
+      gap: 8,
+      paddingRight: Spacing.md,
+    },
+    filterChip: {
+      backgroundColor: c.card,
+      borderRadius: Radius.pill,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: 7,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    filterChipActive: {
+      backgroundColor: c.primary,
+      borderColor: c.primary,
+    },
+    filterChipText: {
+      ...Typography.labelSmall,
+      color: c.textSecondary,
+    },
+    filterChipTextActive: {
+      color: c.onPrimary,
+      fontWeight: '700',
+    },
+    favBtn: {
+      padding: 4,
+    },
+    favIcon: {
+      fontSize: 18,
+    },
+
     summaryCard: { backgroundColor: c.card, borderRadius: Radius.card, padding: 20, alignItems: 'center', ...Shadows.md, marginBottom: 20 },
     summaryVal: { ...Typography.displayMedium, color: c.primaryText },
     summaryLbl: { ...Typography.label, color: c.textSecondary, marginTop: 2 },

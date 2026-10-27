@@ -118,9 +118,9 @@ const LeaderboardScreen = () => {
     <Screen withBack>
       <HeroHeader
         withBack
-        eyebrow="LEADERBOARD"
+        eyebrow="GENUINE LEADERBOARD"
         title="You and your friends"
-        subtitle="Scores come from your own data and from codes your friends share with you."
+        subtitle="100% genuine data — strictly computed from your own energy records and real friend score codes. Zero fake or simulated users."
         variant="grape"
       >
         <GlassPanel style={s.heroPanel}>

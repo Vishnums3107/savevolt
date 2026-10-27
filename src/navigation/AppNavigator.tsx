@@ -31,6 +31,7 @@ import EditApplianceScreen from '../screens/EditApplianceScreen';
 import HouseholdsScreen from '../screens/HouseholdsScreen';
 import AccountSyncScreen from '../screens/AccountSyncScreen';
 import SmartHomeScreen from '../screens/SmartHomeScreen';
+import HybridRenewableScreen from '../screens/HybridRenewableScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();
@@ -113,6 +114,7 @@ const TrackStack = () => (
     <Stack.Screen name="EditAppliance" component={EditApplianceScreen} />
     <Stack.Screen name="Map" component={EnergyMapScreen} />
     <Stack.Screen name="SmartHome" component={SmartHomeScreen} />
+    <Stack.Screen name="HybridRenewable" component={HybridRenewableScreen} />
   </Stack.Navigator>
 );
 

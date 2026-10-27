@@ -5,6 +5,7 @@ import { useEnergy } from '../context/EnergyContext';
 import { useEnergyStore } from '../store/energyStore';
 import { getHomeAssistantSession } from '../services/hardware/HomeAssistantService';
 import { mockSmartPlugSession } from '../services/hardware/MockSmartPlugService';
+import { shellyLocalSession } from '../services/hardware/ShellyLocalService';
 import { DeviceStatus, HardwareDiscovery, IHardwareService } from '../services/hardware/IHardwareService';
 import ManagementPage, { ManagementButton, ManagementCard, ManagementInput, useManagementStyles } from '../components/ManagementPage';
 
@@ -15,11 +16,14 @@ export default function SmartHomeScreen() {
 
 function SmartHomeControls({ householdId, blocked }: { householdId: string; blocked: boolean }) {
   const { appliances, updateAppliance } = useEnergy('appliances', 'updateAppliance');
-  const [providerMode, setProviderMode] = useState<'home-assistant' | 'simulator'>('simulator');
+  const [providerMode, setProviderMode] = useState<'virtual' | 'shelly' | 'home-assistant'>('virtual');
+  const [shellyHost, setShellyHost] = useState('');
 
   const haService = useMemo(() => getHomeAssistantSession(householdId), [householdId]);
   const activeService: IHardwareService & { isConnected(): boolean } = useMemo(() => {
-    return providerMode === 'simulator' ? mockSmartPlugSession : haService;
+    if (providerMode === 'virtual') return mockSmartPlugSession;
+    if (providerMode === 'shelly') return shellyLocalSession;
+    return haService;
   }, [haService, providerMode]);
 
   const s = useManagementStyles();
@@ -103,8 +107,11 @@ function SmartHomeControls({ householdId, blocked }: { householdId: string; bloc
   }, [connected, focused, deviceId, sensorId, activeService]);
 
   const connect = () => run(async () => {
-    if (providerMode === 'simulator') {
+    if (providerMode === 'virtual') {
       await mockSmartPlugSession.connect();
+    } else if (providerMode === 'shelly') {
+      if (!shellyHost.trim()) throw new Error('Enter your Shelly device IP or hostname (e.g. 192.168.1.150).');
+      await shellyLocalSession.connect({ host: shellyHost });
     } else {
       await haService.connect({ url, token });
       if (mounted.current) setToken('');
@@ -127,7 +134,7 @@ function SmartHomeControls({ householdId, blocked }: { householdId: string; bloc
 
   const bind = () => run(async () => {
     if (useEnergyStore.getState().activeHouseholdId !== householdId) return;
-    await updateAppliance(applianceId, { hardwareLink: { provider: 'home-assistant', deviceId, powerSensorId: sensorId || undefined } });
+    await updateAppliance(applianceId, { hardwareLink: { provider: providerMode === 'virtual' ? 'virtual' : providerMode === 'shelly' ? 'shelly' : 'home-assistant', deviceId, powerSensorId: sensorId || undefined } });
     if (mounted.current) setMessage('Plug and sensor paired with your appliance.');
   });
 
@@ -140,17 +147,22 @@ function SmartHomeControls({ householdId, blocked }: { householdId: string; bloc
   const disabled = busy || blocked;
 
   return (
-    <ManagementPage title="Smart plugs" subtitle="Read live wattage and control plugs through Home Assistant or Smart Plug Simulator.">
+    <ManagementPage title="Smart plugs" subtitle="Read live telemetry and control plugs via Virtual Plugs, Shelly Local LAN, or Home Assistant.">
       <ManagementCard>
         <Text style={s.heading} accessibilityRole="header">Integration Mode</Text>
         <Text style={s.text}>Select your smart plug source:</Text>
         <ManagementButton
-          label={providerMode === 'simulator' ? '✓ Mode: Smart Plug Simulator (Ready)' : 'Switch to Smart Plug Simulator'}
+          label={providerMode === 'virtual' ? '✓ Virtual Plugs (Driven by your Appliances)' : 'Switch to Virtual Plugs (Appliance-Driven)'}
           disabled={disabled}
-          onPress={() => setProviderMode('simulator')}
+          onPress={() => setProviderMode('virtual')}
         />
         <ManagementButton
-          label={providerMode === 'home-assistant' ? '✓ Mode: Home Assistant (HTTPS)' : 'Switch to Home Assistant'}
+          label={providerMode === 'shelly' ? '✓ Mode: Shelly Local (LAN Direct Wi-Fi)' : 'Switch to Shelly Local Control'}
+          disabled={disabled}
+          onPress={() => setProviderMode('shelly')}
+        />
+        <ManagementButton
+          label={providerMode === 'home-assistant' ? '✓ Mode: Home Assistant (LAN / HTTPS)' : 'Switch to Home Assistant'}
           disabled={disabled}
           onPress={() => setProviderMode('home-assistant')}
         />
@@ -158,30 +170,46 @@ function SmartHomeControls({ householdId, blocked }: { householdId: string; bloc
 
       <ManagementCard>
         <Text style={s.heading} accessibilityRole="header">
-          {providerMode === 'simulator' ? 'Smart Plug Simulator' : 'Home Assistant connection'}
+          {providerMode === 'virtual'
+            ? 'Virtual Plugs (Your Appliances)'
+            : providerMode === 'shelly'
+            ? 'Shelly Local Wi-Fi Connection'
+            : 'Home Assistant Connection'}
         </Text>
         <Text style={s.text}>
-          {providerMode === 'simulator'
-            ? 'Connect virtual smart plugs with live power fluctuating telemetry to test hardware control, wattage syncing, and automated toggling.'
-            : 'Connect your existing Home Assistant server with a long-lived access token. The token stays in memory for this app session.'}
+          {providerMode === 'virtual'
+            ? 'Dynamically driven by your registered appliances. Toggling plug switches the appliance active state in SaveVolt with live fluctuating wattage telemetry.'
+            : providerMode === 'shelly'
+            ? 'Direct Wi-Fi / LAN control for Shelly Gen 1 and Gen 2/Plus devices. Zero cloud required—reads live apower wattage directly.'
+            : 'Connect your local network Home Assistant instance (e.g. http://192.168.1.x:8123) or HTTPS domain with a long-lived access token.'}
         </Text>
         {!connected ? (
           <>
+            {providerMode === 'shelly' && (
+              <ManagementInput
+                label="Shelly IP or hostname"
+                value={shellyHost}
+                onChangeText={setShellyHost}
+                placeholder="192.168.1.150 or shellyplus1pm.local"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+            )}
             {providerMode === 'home-assistant' && (
               <>
-                <ManagementInput label="Home Assistant HTTPS address" value={url} onChangeText={setUrl} placeholder="https://home.example.com" keyboardType="url" autoCapitalize="none" autoCorrect={false} />
+                <ManagementInput label="Home Assistant address" value={url} onChangeText={setUrl} placeholder="http://192.168.1.100:8123 or https://..." keyboardType="url" autoCapitalize="none" autoCorrect={false} />
                 <ManagementInput label="Home Assistant access token" value={token} onChangeText={setToken} secureTextEntry autoCapitalize="none" autoCorrect={false} />
               </>
             )}
             <ManagementButton
-              label={providerMode === 'simulator' ? 'Connect Smart Plug Simulator' : 'Connect Home Assistant'}
+              label={providerMode === 'virtual' ? 'Connect Virtual Plugs' : providerMode === 'shelly' ? 'Connect Shelly Device' : 'Connect Home Assistant'}
               disabled={disabled}
               onPress={connect}
             />
           </>
         ) : (
           <>
-            <Text style={s.notice}>Connected ({providerMode === 'simulator' ? 'Simulator' : 'Home Assistant'})</Text>
+            <Text style={s.notice}>Connected ({providerMode === 'virtual' ? 'Virtual (Appliance-Driven)' : providerMode === 'shelly' ? 'Shelly Local LAN' : 'Home Assistant'})</Text>
             <ManagementButton label="Refresh devices" disabled={disabled} onPress={() => run(discover)} />
             <ManagementButton label="Disconnect" disabled={disabled} onPress={disconnect} />
           </>

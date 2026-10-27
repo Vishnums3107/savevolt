@@ -19,11 +19,11 @@ const isEntity = (value: unknown): value is Entity => {
 
 export const normalizeHomeAssistantUrl = (value: string): string => {
   const trimmed = value.trim().replace(/\/+$/, '');
-  // Use HTTPS for token-bearing requests on both platforms; do not loosen the
-  // app-wide Android cleartext or iOS transport-security policies.
-  const match = trimmed.match(/^https:\/\/(?:[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?|\[[0-9a-fA-F:]+\])(?::(\d{1,5}))?$/);
+  // Allow HTTP for local network LAN instances (e.g. http://192.168.1.50:8123 or http://homeassistant.local:8123)
+  // as well as HTTPS for external domains.
+  const match = trimmed.match(/^https?:\/\/(?:[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?|\[[0-9a-fA-F:]+\])(?::(\d{1,5}))?$/);
   if (!match || (match[1] && (Number(match[1]) < 1 || Number(match[1]) > 65535))) {
-    throw new Error('Enter your Home Assistant HTTPS address, without a path or login details.');
+    throw new Error('Enter your Home Assistant URL (e.g. http://192.168.1.100:8123 or https://...), without a path.');
   }
   return trimmed;
 };

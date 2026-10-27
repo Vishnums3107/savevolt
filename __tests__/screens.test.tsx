@@ -65,6 +65,7 @@ const SCREENS: ScreenCase[] = [
   { name: 'Households', load: () => require('../src/screens/HouseholdsScreen').default },
   { name: 'AccountSync', load: () => require('../src/screens/AccountSyncScreen').default },
   { name: 'SmartHome', load: () => require('../src/screens/SmartHomeScreen').default },
+  { name: 'HybridRenewable', load: () => require('../src/screens/HybridRenewableScreen').default },
   ...(['track', 'insights', 'goals', 'profile'] as const).map((area) => ({
     name: `FeatureHub (${area})`,
     load: () => require('../src/screens/FeatureHubScreen').default,

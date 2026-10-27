@@ -13,12 +13,13 @@ import EmptyState from '../components/EmptyState';
 import FocusAwareStatusBar from '../components/FocusAwareStatusBar';
 
 const W = Dimensions.get('window').width;
-type Period = 'daily' | 'weekly' | 'monthly';
+type Period = 'daily' | 'weekly' | 'monthly' | 'yearly';
 
 const PERIODS: { key: Period; short: string; label: string; days: number }[] = [
   { key: 'daily', short: '7D', label: 'Last 7 days', days: 7 },
   { key: 'weekly', short: '4W', label: 'Last 4 weeks', days: 28 },
   { key: 'monthly', short: '3M', label: 'Last 3 months', days: 90 },
+  { key: 'yearly', short: '1Y', label: 'Last 1 year', days: 365 },
 ];
 
 const MEDALS = ['🥇', '🥈', '🥉'];
@@ -57,7 +58,8 @@ const TrendsScreen = () => {
     labels: trend.map((d, i) => {
       if (period === 'daily') return format(new Date(d.date), 'dd');
       if (period === 'weekly') return i % 7 === 0 ? format(new Date(d.date), 'MMM dd') : '';
-      return i % 30 === 0 ? format(new Date(d.date), 'MMM') : '';
+      if (period === 'monthly') return i % 30 === 0 ? format(new Date(d.date), 'MMM') : '';
+      return i % 60 === 0 ? format(new Date(d.date), 'MMM') : '';
     }),
     datasets: [{ data: trend.map((d) => d.consumption || 0.01) }],
   }), [trend, period]);

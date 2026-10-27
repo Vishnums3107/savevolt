@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Text, View } from 'react-native';
+import { Alert, Share, Text, View } from 'react-native';
 import { useEnergy } from '../context/EnergyContext';
 import { useEnergyStore } from '../store/energyStore';
 import CloudSyncService, { CloudAccount, CloudHome, cloudErrorMessage } from '../services/CloudSyncService';
@@ -15,6 +15,8 @@ export default function AccountSyncScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  const [importJsonText, setImportJsonText] = useState('');
+  const [showImportField, setShowImportField] = useState(false);
   const working = useRef(false);
   const mounted = useRef(true);
   const available = CloudSyncService.isAvailable();
@@ -68,6 +70,61 @@ export default function AccountSyncScreen() {
     await switchHousehold(id);
   }, 'Cloud data restored as a separate home. Your existing homes are safe.');
 
+  const handleExportHomeJson = async () => {
+    try {
+      const { household, data } = await captureHouseholdData();
+      const payload = {
+        format: 'savevolt_home_backup',
+        version: '1.0.0',
+        exportedAt: new Date().toISOString(),
+        homeName: household.name,
+        data,
+      };
+      await Share.share({
+        title: `SaveVolt Backup - ${household.name}`,
+        message: JSON.stringify(payload, null, 2),
+      });
+    } catch {
+      Alert.alert('Export Failed', 'Could not share the home backup.');
+    }
+  };
+
+  const handleImportHomeJson = async () => {
+    const raw = importJsonText.trim();
+    if (!raw) {
+      Alert.alert('Paste Backup JSON', 'Please paste the backup JSON string to restore.');
+      return;
+    }
+    try {
+      let parsed = JSON.parse(raw);
+      let restoreData = parsed;
+      let targetName = 'Restored Home';
+
+      if (parsed.format === 'savevolt_home_backup' && parsed.data) {
+        restoreData = parsed.data;
+        if (parsed.homeName) targetName = parsed.homeName;
+      } else if (parsed.settings && parsed.appliances) {
+        restoreData = parsed;
+      }
+
+      const existing = useEnergyStore.getState().households;
+      const base = targetName.slice(0, 48);
+      let name = base;
+      let copy = 1;
+      while (existing.some((item) => item.name.toLowerCase() === name.toLowerCase())) {
+        name = `${base} (restored ${copy++})`;
+      }
+
+      const id = await restoreHousehold(name, restoreData);
+      await switchHousehold(id);
+      setImportJsonText('');
+      setShowImportField(false);
+      Alert.alert('Home Restored', `Successfully imported "${name}" with ${restoreData.appliances?.length ?? 0} appliances!`);
+    } catch (err: any) {
+      Alert.alert('Restore Failed', err?.message || 'Invalid household backup JSON format.');
+    }
+  };
+
   return <ManagementPage title="Account sync" subtitle="Back up homes and bring them to your other devices.">
     <ManagementCard>
       <Text style={s.text}>Backups include devices, logs, rooms, goals, reminders, and energy rates. API keys and device preferences stay on this device.</Text>
@@ -95,5 +152,42 @@ export default function AccountSyncScreen() {
       <Text style={s.text}>{home.updatedAt ? `Last backup: ${new Date(home.updatedAt).toLocaleString()}` : 'Backup ready'}</Text>
       <ManagementButton label={`Restore ${home.name}`} disabled={disabled} onPress={() => restore(home)} />
     </ManagementCard>)}
+
+    {/* Offline JSON Backup & Transfer */}
+    <ManagementCard>
+      <Text style={s.heading}>Offline Backup & File Transfer</Text>
+      <Text style={s.text}>
+        Back up {currentHome?.name ? `“${currentHome.name}”` : 'your home'} directly to JSON or import a saved backup from another phone or computer without creating an account.
+      </Text>
+      <View style={s.row}>
+        <ManagementButton
+          label="Export home (JSON)"
+          disabled={disabled}
+          onPress={handleExportHomeJson}
+        />
+        <ManagementButton
+          label={showImportField ? 'Hide import' : 'Import from JSON'}
+          disabled={disabled}
+          onPress={() => setShowImportField(!showImportField)}
+        />
+      </View>
+      {showImportField && (
+        <View style={{ marginTop: 8, gap: 8 }}>
+          <ManagementInput
+            label="Paste Home Backup JSON"
+            value={importJsonText}
+            onChangeText={setImportJsonText}
+            multiline
+            numberOfLines={4}
+            placeholder="Paste your JSON backup payload here..."
+          />
+          <ManagementButton
+            label="Restore home from JSON"
+            disabled={disabled || !importJsonText.trim()}
+            onPress={handleImportHomeJson}
+          />
+        </View>
+      )}
+    </ManagementCard>
   </ManagementPage>;
 }

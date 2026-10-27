@@ -15,7 +15,7 @@ import AccessibleTouchable from '../components/AccessibleTouchable';
 import EmptyState from '../components/EmptyState';
 import FocusAwareStatusBar from '../components/FocusAwareStatusBar';
 import { SkeletonCard } from '../components/Skeleton';
-import AIRecommendationEngine, { AIRecommendation } from '../services/AIRecommendationEngine';
+import AIRecommendationEngine, { AIRecommendation, AppliedAction } from '../services/AIRecommendationEngine';
 import { formatEnergy, formatCost } from '../utils/energy';
 import { getGeminiRecommendationSummary } from '../services/GeminiService';
 
@@ -143,6 +143,7 @@ const RecommendationsScreen = () => {
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [refreshCount, setRefreshCount] = useState(0);
+  const [appliedHistory, setAppliedHistory] = useState<AppliedAction[]>([]);
   const { electricityRate, currency, geminiApiKey, weatherLocation } = settings;
 
   // refreshCount re-runs the analysis when the user taps Refresh
@@ -160,6 +161,7 @@ const RecommendationsScreen = () => {
       );
       if (cancelled) return;
       setRecommendations(AIRecommendationEngine.getRecommendations());
+      setAppliedHistory(AIRecommendationEngine.getAppliedHistory());
       setLoading(false);
 
       // The Gemini summary is optional; recommendations stay visible while it loads
@@ -223,12 +225,28 @@ const RecommendationsScreen = () => {
       const result = await AIRecommendationEngine.applyRecommendation(rec);
       if (result.success) {
         setRecommendations((current) => current.filter((item) => item.id !== rec.id));
-        Alert.alert('Action Applied', result.message);
+        setAppliedHistory(AIRecommendationEngine.getAppliedHistory());
+        Alert.alert('Action Applied', `${result.message}\n\nYou can undo this anytime using the Undo bar above.`);
       } else {
         Alert.alert('Action Failed', result.message);
       }
     } catch {
       Alert.alert('Error', 'Failed to apply recommendation.');
+    }
+  }, []);
+
+  const handleUndo = useCallback(async (actionId: string) => {
+    try {
+      const result = await AIRecommendationEngine.undoAction(actionId);
+      if (result.success) {
+        setAppliedHistory(AIRecommendationEngine.getAppliedHistory());
+        setRecommendations(AIRecommendationEngine.getRecommendations());
+        Alert.alert('Action Undone', result.message);
+      } else {
+        Alert.alert('Undo Failed', result.message);
+      }
+    } catch {
+      Alert.alert('Error', 'Failed to undo action.');
     }
   }, []);
 
@@ -337,6 +355,34 @@ const RecommendationsScreen = () => {
             </View>
           </View>
 
+          {/* Recently Applied Actions - Undo Stack */}
+          {appliedHistory.length > 0 ? (
+            <View style={s.undoContainer}>
+              <View style={s.undoHeader}>
+                <Text style={s.undoTitle}>↩️ Applied Actions ({appliedHistory.length})</Text>
+                <Text style={s.undoSubtitle}>Revert applied adjustments at any time</Text>
+              </View>
+              {appliedHistory.slice(0, 3).map((item) => (
+                <View key={item.id} style={s.undoItem}>
+                  <View style={s.undoItemTextWrap}>
+                    <Text style={s.undoItemTitle}>{item.summary}</Text>
+                    <Text style={s.undoItemTime}>
+                      {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </Text>
+                  </View>
+                  <AccessibleTouchable
+                    label={`Undo ${item.summary}`}
+                    hint="Reverts this appliance adjustment"
+                    style={s.undoBtn}
+                    onPress={() => handleUndo(item.id)}
+                  >
+                    <Text style={s.undoBtnText}>↩️ Undo</Text>
+                  </AccessibleTouchable>
+                </View>
+              ))}
+            </View>
+          ) : null}
+
           {/* Filter */}
           <ScrollView
             horizontal
@@ -442,6 +488,64 @@ const createStyles = (c: ThemeColors) => {
       ...Typography.bodyMedium,
       color: c.textSecondary,
       lineHeight: 22,
+    },
+    undoContainer: {
+      backgroundColor: c.card,
+      borderRadius: Radius.card,
+      padding: Spacing.md,
+      marginBottom: Spacing.lg,
+      borderWidth: 1.5,
+      borderColor: c.primaryLight,
+      ...Shadows.sm,
+    },
+    undoHeader: {
+      marginBottom: Spacing.sm,
+    },
+    undoTitle: {
+      ...Typography.h3,
+      color: c.text,
+      fontSize: 15,
+    },
+    undoSubtitle: {
+      ...Typography.bodySmall,
+      color: c.textMuted,
+      marginTop: 2,
+    },
+    undoItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      backgroundColor: c.background,
+      padding: Spacing.sm,
+      borderRadius: Radius.sm,
+      marginTop: Spacing.xs,
+    },
+    undoItemTextWrap: {
+      flex: 1,
+      marginRight: Spacing.sm,
+    },
+    undoItemTitle: {
+      ...Typography.bodySmall,
+      color: c.text,
+      fontWeight: '600',
+    },
+    undoItemTime: {
+      ...Typography.labelSmall,
+      color: c.textMuted,
+      marginTop: 2,
+    },
+    undoBtn: {
+      backgroundColor: c.warningSoft,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.xs,
+      borderRadius: Radius.pill,
+      borderWidth: 1,
+      borderColor: c.warning,
+    },
+    undoBtnText: {
+      ...Typography.labelSmall,
+      color: c.warning,
+      fontWeight: '700',
     },
     savingsCard: {
       backgroundColor: c.card,

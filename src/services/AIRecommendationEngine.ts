@@ -5,6 +5,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Appliance, UsageRecord } from '../types';
+import { useEnergyStore } from '../store/energyStore';
 
 export interface AIRecommendation {
   id: string;
@@ -23,6 +24,30 @@ export interface AIRecommendation {
   createdAt: Date;
 }
 
+export interface AppliedAction {
+  id: string;
+  recommendationId: string;
+  recommendationTitle: string;
+  summary: string;
+  timestamp: string;
+  actionType: 'reduce_hours' | 'pause_appliance' | 'create_goal' | 'create_reminder' | 'custom';
+  targetApplianceId?: string;
+  targetApplianceName?: string;
+  previousState: {
+    hoursPerDay?: number;
+    isActive?: boolean;
+    createdGoalId?: string;
+    createdReminderId?: string;
+  };
+  newState: {
+    hoursPerDay?: number;
+    isActive?: boolean;
+    createdGoalId?: string;
+    createdReminderId?: string;
+  };
+  rec: AIRecommendation;
+}
+
 export interface UsagePattern {
   timeOfDay: 'morning' | 'afternoon' | 'evening' | 'night';
   dayOfWeek: string;
@@ -34,6 +59,7 @@ export interface UsagePattern {
 class AIRecommendationEngine {
   private static instance: AIRecommendationEngine;
   private recommendations: AIRecommendation[] = [];
+  private appliedHistory: AppliedAction[] = [];
   private usageHistory: UsageRecord[] = [];
   private patterns: UsagePattern[] = [];
   private electricityRate = 0.12;
@@ -59,6 +85,14 @@ class AIRecommendationEngine {
   ): Promise<void> {
     try {
       this.usageHistory = usageRecords;
+            try {
+        const storedHistory = await AsyncStorage.getItem('@savevolt_ai_applied_history');
+        if (storedHistory) {
+          this.appliedHistory = JSON.parse(storedHistory);
+        }
+      } catch {
+        this.appliedHistory = [];
+      }
       this.electricityRate = Math.max(0, electricityRate);
       this.currency = currency || '$';
       await this.analyzeUsagePatterns(appliances, usageRecords);
@@ -317,34 +351,66 @@ class AIRecommendationEngine {
   }
 
   /**
-   * Mark recommendation as actioned
-   */  /**
-   * Apply recommendation directly into the app state
+   * Apply recommendation directly into the app state with full undo recording
    */
   public async applyRecommendation(
     rec: AIRecommendation
-  ): Promise<{ success: boolean; message: string }> {
+  ): Promise<{ success: boolean; message: string; actionId?: string }> {
     try {
-      const { useEnergyStore } = await import('../store/energyStore');
+      // using top-level useEnergyStore
       const store = useEnergyStore.getState();
 
       if (rec.actionType === 'reduce_hours' && rec.targetApplianceId) {
         const app = store.appliances.find((a) => a.id === rec.targetApplianceId);
         if (app) {
           const reduction = rec.actionPayload?.hours ?? 2;
+          const prevHours = app.hoursPerDay;
           const newHours = Math.max(0.5, app.hoursPerDay - reduction);
           await store.updateAppliance(app.id, { hoursPerDay: newHours });
+
+          const actionRecord: AppliedAction = {
+            id: 'applied-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+            recommendationId: rec.id,
+            recommendationTitle: rec.title,
+            summary: `Reduced ${app.name} runtime from ${prevHours}h to ${newHours}h/day`,
+            timestamp: new Date().toISOString(),
+            actionType: 'reduce_hours',
+            targetApplianceId: app.id,
+            targetApplianceName: app.name,
+            previousState: { hoursPerDay: prevHours },
+            newState: { hoursPerDay: newHours },
+            rec,
+          };
+          this.appliedHistory.unshift(actionRecord);
+          await AsyncStorage.setItem('@savevolt_ai_applied_history', JSON.stringify(this.appliedHistory));
           await this.markAsActioned(rec.id);
-          return { success: true, message: `Reduced ${app.name} usage to ${newHours}h/day.` };
+          return { success: true, message: `Reduced ${app.name} usage to ${newHours}h/day.`, actionId: actionRecord.id };
         }
       }
 
       if (rec.actionType === 'pause_appliance' && rec.targetApplianceId) {
         const app = store.appliances.find((a) => a.id === rec.targetApplianceId);
         if (app) {
+          const prevActive = app.isActive;
           await store.updateAppliance(app.id, { isActive: false });
+
+          const actionRecord: AppliedAction = {
+            id: 'applied-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+            recommendationId: rec.id,
+            recommendationTitle: rec.title,
+            summary: `Paused ${app.name} standby draw`,
+            timestamp: new Date().toISOString(),
+            actionType: 'pause_appliance',
+            targetApplianceId: app.id,
+            targetApplianceName: app.name,
+            previousState: { isActive: prevActive },
+            newState: { isActive: false },
+            rec,
+          };
+          this.appliedHistory.unshift(actionRecord);
+          await AsyncStorage.setItem('@savevolt_ai_applied_history', JSON.stringify(this.appliedHistory));
           await this.markAsActioned(rec.id);
-          return { success: true, message: `Paused ${app.name} to eliminate phantom load.` };
+          return { success: true, message: `Paused ${app.name} to eliminate phantom load.`, actionId: actionRecord.id };
         }
       }
 
@@ -352,17 +418,35 @@ class AIRecommendationEngine {
         const goalKwh = rec.actionPayload?.goalKwh ?? Math.round(rec.potentialSavings || 50);
         const deadline = new Date();
         deadline.setDate(deadline.getDate() + 30);
+        const prevGoalIds = new Set(store.goals.map((g) => g.id));
         await store.addGoal({
           type: 'consumption',
           target: goalKwh,
           deadline: deadline.toISOString(),
         });
+        const currentGoals = useEnergyStore.getState().goals;
+        const createdGoal = currentGoals.find((g) => !prevGoalIds.has(g.id));
+
+        const actionRecord: AppliedAction = {
+          id: 'applied-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+          recommendationId: rec.id,
+          recommendationTitle: rec.title,
+          summary: `Created 30-day goal to save ${goalKwh} kWh`,
+          timestamp: new Date().toISOString(),
+          actionType: 'create_goal',
+          previousState: {},
+          newState: { createdGoalId: createdGoal?.id },
+          rec,
+        };
+        this.appliedHistory.unshift(actionRecord);
+        await AsyncStorage.setItem('@savevolt_ai_applied_history', JSON.stringify(this.appliedHistory));
         await this.markAsActioned(rec.id);
-        return { success: true, message: `Created new monthly goal to save ${goalKwh} kWh.` };
+        return { success: true, message: `Created new monthly goal to save ${goalKwh} kWh.`, actionId: actionRecord.id };
       }
 
       if (rec.actionType === 'create_reminder') {
         const time = rec.actionPayload?.reminderTime ?? '22:00';
+        const prevReminderIds = new Set(store.reminders.map((r) => r.id));
         await store.addReminder({
           title: 'Off-Peak Energy Reminder',
           message: rec.action || 'Shift heavy appliances to off-peak hours now to save money.',
@@ -370,8 +454,24 @@ class AIRecommendationEngine {
           days: [1, 2, 3, 4, 5],
           isActive: true,
         });
+        const currentReminders = useEnergyStore.getState().reminders;
+        const createdReminder = currentReminders.find((r) => !prevReminderIds.has(r.id));
+
+        const actionRecord: AppliedAction = {
+          id: 'applied-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+          recommendationId: rec.id,
+          recommendationTitle: rec.title,
+          summary: `Created off-peak reminder for ${time}`,
+          timestamp: new Date().toISOString(),
+          actionType: 'create_reminder',
+          previousState: {},
+          newState: { createdReminderId: createdReminder?.id },
+          rec,
+        };
+        this.appliedHistory.unshift(actionRecord);
+        await AsyncStorage.setItem('@savevolt_ai_applied_history', JSON.stringify(this.appliedHistory));
         await this.markAsActioned(rec.id);
-        return { success: true, message: `Created off-peak reminder for ${time}.` };
+        return { success: true, message: `Created off-peak reminder for ${time}.`, actionId: actionRecord.id };
       }
 
       await this.markAsActioned(rec.id);
@@ -380,6 +480,78 @@ class AIRecommendationEngine {
       console.error('Failed to apply recommendation:', error);
       return { success: false, message: error instanceof Error ? error.message : 'Action failed.' };
     }
+  }
+
+  /**
+   * Undo a previously applied action and restore prior state
+   */
+  public async undoAction(
+    actionId: string
+  ): Promise<{ success: boolean; message: string; restoredRec?: AIRecommendation }> {
+    const actionIndex = this.appliedHistory.findIndex((a) => a.id === actionId);
+    if (actionIndex < 0) {
+      return { success: false, message: 'Action not found in undo history.' };
+    }
+    const action = this.appliedHistory[actionIndex];
+
+    try {
+      // using top-level useEnergyStore
+      const store = useEnergyStore.getState();
+
+      if (action.actionType === 'reduce_hours' && action.targetApplianceId && action.previousState.hoursPerDay !== undefined) {
+        await store.updateAppliance(action.targetApplianceId, { hoursPerDay: action.previousState.hoursPerDay });
+      } else if (action.actionType === 'pause_appliance' && action.targetApplianceId && action.previousState.isActive !== undefined) {
+        await store.updateAppliance(action.targetApplianceId, { isActive: action.previousState.isActive });
+      } else if (action.actionType === 'create_goal' && action.newState.createdGoalId) {
+        await store.deleteGoal(action.newState.createdGoalId);
+      } else if (action.actionType === 'create_reminder' && action.newState.createdReminderId) {
+        await store.deleteReminder(action.newState.createdReminderId);
+      }
+
+      // Restore recommendation back into active list
+      if (action.rec && !this.recommendations.some((r) => r.id === action.rec.id)) {
+        this.recommendations.unshift(action.rec);
+        await AsyncStorage.setItem('ai_recommendations', JSON.stringify(this.recommendations));
+      }
+
+      // Remove from history
+      this.appliedHistory.splice(actionIndex, 1);
+      await AsyncStorage.setItem('@savevolt_ai_applied_history', JSON.stringify(this.appliedHistory));
+
+      return {
+        success: true,
+        message: `Successfully undone: ${action.summary}`,
+        restoredRec: action.rec,
+      };
+    } catch (error) {
+      console.error('Failed to undo action:', error);
+      return { success: false, message: error instanceof Error ? error.message : 'Undo failed.' };
+    }
+  }
+
+  /**
+   * Undo the most recently applied action
+   */
+  public async undoLastAction(): Promise<{ success: boolean; message: string; restoredRec?: AIRecommendation }> {
+    if (this.appliedHistory.length === 0) {
+      return { success: false, message: 'No actions to undo.' };
+    }
+    return this.undoAction(this.appliedHistory[0].id);
+  }
+
+  /**
+   * Get all applied actions eligible for undo
+   */
+  public getAppliedHistory(): AppliedAction[] {
+    return [...this.appliedHistory];
+  }
+
+  /**
+   * Clear all applied actions history
+   */
+  public async clearAppliedHistory(): Promise<void> {
+    this.appliedHistory = [];
+    await AsyncStorage.removeItem('@savevolt_ai_applied_history');
   }
 
 

@@ -20,6 +20,56 @@ import NotificationService from '../services/NotificationService';
 import { useNotificationStatus } from '../services/notifications/useNotificationSync';
 import { Radius, Shadows, Spacing, Typography } from '../theme';
 
+
+interface RoutineTemplate {
+  id: string;
+  title: string;
+  message: string;
+  time: string;
+  days: number[];
+  icon: string;
+  tag: string;
+}
+
+const ROUTINE_TEMPLATES: RoutineTemplate[] = [
+  {
+    id: 'tpl-vampire',
+    title: 'Bedtime Vampire Sweep',
+    message: 'Check entertainment centers and unplug idle chargers before bed.',
+    time: '22:30',
+    days: [0, 1, 2, 3, 4, 5, 6],
+    icon: '🌙',
+    tag: 'DAILY · SAVINGS',
+  },
+  {
+    id: 'tpl-peak',
+    title: 'Peak Rate Alert',
+    message: 'Peak electricity rates are in effect now! Shift high-energy tasks.',
+    time: '14:00',
+    days: [1, 2, 3, 4, 5],
+    icon: '⚡',
+    tag: 'WEEKDAYS · COST',
+  },
+  {
+    id: 'tpl-log',
+    title: 'Daily Usage Check',
+    message: 'Take a quick look at your active appliances and log your daily usage.',
+    time: '20:00',
+    days: [0, 1, 2, 3, 4, 5, 6],
+    icon: '📝',
+    tag: 'HABIT · STREAK',
+  },
+  {
+    id: 'tpl-bill',
+    title: 'Utility Bill Reconciliation',
+    message: 'Check your utility portal for your latest bill and reconcile your tracked costs.',
+    time: '10:00',
+    days: [0],
+    icon: '📄',
+    tag: 'WEEKLY · BILLS',
+  },
+];
+
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
 
@@ -122,6 +172,15 @@ const RemindersScreen = () => {
     Alert.alert('Reminder saved', savedMessage);
   };
 
+
+  const handleApplyTemplate = useCallback((tpl: RoutineTemplate) => {
+    setTitle(tpl.title);
+    setMessage(tpl.message);
+    setTime(tpl.time);
+    setDays(tpl.days);
+    setShowModal(true);
+  }, []);
+
   const removeReminder = (id: string, reminderTitle: string) => {
     Alert.alert('Delete reminder', `Remove “${reminderTitle}”?`, [
       { text: 'Cancel', style: 'cancel' },
@@ -159,6 +218,33 @@ const RemindersScreen = () => {
           <Text style={s.noticeText}>Your reminders are saved, but alerts will stay muted until you enable notifications in Settings.</Text>
         </View>
       )}
+
+
+      {/* Recommended Energy Routines */}
+      <View style={s.templatesSection}>
+        <Text style={s.templatesHeader} accessibilityRole="header">Recommended Energy Routines</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.templatesScroll}>
+          {ROUTINE_TEMPLATES.map((tpl) => (
+            <AccessibleTouchable
+              key={tpl.id}
+              label={`Use template ${tpl.title} at ${tpl.time}`}
+              hint="Pre-fills reminder form with this routine"
+              style={s.templateCard}
+              onPress={() => handleApplyTemplate(tpl)}
+            >
+              <View style={s.templateTop}>
+                <Text style={s.templateIcon}>{tpl.icon}</Text>
+                <View style={s.templateTag}><Text style={s.templateTagText}>{tpl.tag}</Text></View>
+              </View>
+              <Text style={s.templateTitle}>{tpl.title}</Text>
+              <Text style={s.templateTime}>⏰ {tpl.time} · {formatSchedule(tpl.days)}</Text>
+              <View style={s.templateAddBtn}>
+                <Text style={s.templateAddBtnText}>+ Use Template</Text>
+              </View>
+            </AccessibleTouchable>
+          ))}
+        </ScrollView>
+      </View>
 
       {exactAlarmDenied && (
         <View style={s.notice}>
@@ -363,6 +449,76 @@ const createStyles = (c: ThemeColors) => StyleSheet.create({
   eyebrow: { ...Typography.overline, color: c.primary, marginBottom: 5 },
   heading: { ...Typography.displaySmall, color: c.textOnDark, marginBottom: 6 },
   headerCopy: { ...Typography.bodyMedium, color: c.textOnDarkSub, maxWidth: 310, lineHeight: 20 },
+  templatesSection: {
+    marginHorizontal: Spacing.page,
+    marginTop: Spacing.md,
+    marginBottom: Spacing.sm,
+  },
+  templatesHeader: {
+    ...Typography.label,
+    color: c.textSecondary,
+    marginBottom: Spacing.sm,
+    letterSpacing: 0.5,
+  },
+  templatesScroll: {
+    gap: 12,
+    paddingRight: Spacing.page,
+  },
+  templateCard: {
+    width: 220,
+    backgroundColor: c.card,
+    borderRadius: Radius.card,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: c.border,
+    ...Shadows.sm,
+  },
+  templateTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: Spacing.xs,
+  },
+  templateIcon: {
+    fontSize: 22,
+  },
+  templateTag: {
+    backgroundColor: c.primaryLight + '25',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: Radius.pill,
+  },
+  templateTagText: {
+    ...Typography.labelSmall,
+    fontSize: 9,
+    color: c.primary,
+    fontWeight: '700',
+  },
+  templateTitle: {
+    ...Typography.h3,
+    fontSize: 14,
+    color: c.text,
+    marginTop: 4,
+  },
+  templateTime: {
+    ...Typography.bodySmall,
+    color: c.textMuted,
+    marginTop: 2,
+    marginBottom: Spacing.sm,
+  },
+  templateAddBtn: {
+    backgroundColor: c.background,
+    borderRadius: Radius.pill,
+    paddingVertical: 6,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: c.primary,
+  },
+  templateAddBtnText: {
+    ...Typography.labelSmall,
+    color: c.primary,
+    fontWeight: '700',
+  },
   summaryCard: { marginHorizontal: Spacing.page, marginTop: -18, padding: 18, backgroundColor: c.card, borderRadius: Radius.card, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', ...Shadows.md },
   // Bright green fails contrast on white, so light mode uses the deeper brand green.
   summaryValue: { ...Typography.stat, color: c.primaryText },

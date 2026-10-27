@@ -89,6 +89,7 @@ const STORAGE_KEYS = {
   CHAT: '@energy_app_chat',
   SMART_HOME: '@energy_app_smart_home',
   ONBOARDING: '@energy_app_onboarding',
+  DEMO: '@energy_app_demo_data',
 };
 
 /** Device-wide keys: shared by every home on this phone. */
@@ -124,7 +125,10 @@ const MAX_POINT_EVENTS = 250;
 const parseStored = <T,>(raw: string | null, fallback: T): T => {
   if (!raw) return fallback;
   try {
-    return JSON.parse(raw) as T;
+    const parsed: unknown = JSON.parse(raw);
+    // A list that was saved as something else would crash every screen that maps over it
+    if (Array.isArray(fallback) && !Array.isArray(parsed)) return fallback;
+    return parsed as T;
   } catch (error) {
     console.warn('Ignoring unreadable stored value:', error);
     return fallback;
@@ -200,6 +204,10 @@ export interface EnergyStore {
   profileId: string;
   hasSeenOnboarding: boolean;
   isLoading: boolean;
+  /** Message from the last failed loadAllData (null when the last load worked). The app must not start on it. */
+  loadError: string | null;
+  /** True while this home holds generated sample data (set by loadDemoData, cleared by clearDemoData). */
+  isDemoData: boolean;
   isWeatherLoading: boolean;
 
   // Homes
@@ -214,6 +222,8 @@ export interface EnergyStore {
   resetHouseholdData: () => Promise<void>;
   loadAllData: () => Promise<void>;
   loadDemoData: () => Promise<void>;
+  /** Removes generated sample data (devices, records, rooms...) while keeping settings. No-op for real homes. */
+  clearDemoData: () => Promise<void>;
   refreshDashboard: () => void;
   syncGoals: () => void;
   /** Recomputes goals, challenges and shared goals from the latest data. */
@@ -221,6 +231,8 @@ export interface EnergyStore {
 
   // Appliances
   addAppliance: (appliance: Omit<Appliance, 'id' | 'createdAt'>) => Promise<string>;
+  /** Adds several appliances with one write, one dashboard refresh and one badge/streak update. */
+  addAppliances: (items: Omit<Appliance, 'id' | 'createdAt'>[]) => Promise<string[]>;
   updateAppliance: (id: string, updates: Partial<Appliance>) => Promise<void>;
   deleteAppliance: (id: string) => Promise<void>;
   toggleAppliance: (id: string) => Promise<void>;
@@ -349,7 +361,8 @@ export const useEnergyStore = create<EnergyStore>((set, get) => {
   /** Awards points once per key. */
   const grantPoints = (key: string, points: number, reason: string) => {
     const ledger = get().points;
-    if (points <= 0 || ledger.events.some((event) => event.key === key)) return;
+    // Sample data is never measured, so it cannot earn points
+    if (get().isDemoData || points <= 0 || ledger.events.some((event) => event.key === key)) return;
     const event = { id: uid('pts'), date: new Date().toISOString(), points, reason, key };
     const updated: PointsLedger = {
       total: ledger.total + points,
@@ -490,7 +503,7 @@ export const useEnergyStore = create<EnergyStore>((set, get) => {
       'updateTimer', 'removeTimer', 'dismissInsight', 'restoreInsight', 'markInsightDone', 'undoInsightDone',
       'toggleInsightSaved', 'applyApplianceChange', 'undoInsight', 'importShareCode', 'removeFriend',
       'appendChatMessages', 'updateChatMessage', 'clearChat', 'updateSmartHome', 'resetHouseholdData',
-      'resetOnboarding',
+      'resetOnboarding', 'addAppliances', 'clearDemoData',
     ] as const;
     for (const key of keys) {
       const action = state[key] as (...args: unknown[]) => Promise<unknown>;
@@ -538,6 +551,8 @@ export const useEnergyStore = create<EnergyStore>((set, get) => {
   profileId: '',
   hasSeenOnboarding: false,
   isLoading: true,
+  loadError: null,
+  isDemoData: false,
   isWeatherLoading: false,
 
   // ─── Homes ──────────────────────────────────────────────────────
@@ -646,8 +661,14 @@ export const useEnergyStore = create<EnergyStore>((set, get) => {
       appliances: [], usageRecords: [], reminders: [], goals: [], streak: EMPTY_STREAK, badges: mergeBadges([]),
       rooms: [], communityGoals: [], challenges: [], snapshots: [], activeTimers: [], meterReadings: [],
       points: EMPTY_LEDGER, insightState: EMPTY_INSIGHTS, certificates: [], bills: [], chatMessages: [],
+      isDemoData: false,
     });
     get().refreshDashboard();
+  },
+
+  clearDemoData: async () => {
+    if (!get().isDemoData) return;
+    await get().resetHouseholdData();
   },
 
   // ─── Derived data ───────────────────────────────────────────────
@@ -735,6 +756,7 @@ export const useEnergyStore = create<EnergyStore>((set, get) => {
   loadAllData: async () => {
     try {
       if (!get().isSwitchingHousehold) set({ isLoading: true });
+      set({ loadError: null });
       const [rawHomes, storedActive, rawDevice, rawFriends, storedProfileId] = await Promise.all([
         AsyncStorage.getItem(HOUSEHOLDS_KEY), AsyncStorage.getItem(ACTIVE_HOUSEHOLD_KEY),
         AsyncStorage.getItem(GLOBAL_KEYS.DEVICE_SETTINGS), AsyncStorage.getItem(GLOBAL_KEYS.FRIENDS),
@@ -752,7 +774,7 @@ export const useEnergyStore = create<EnergyStore>((set, get) => {
         storedStreak, storedBadges, storedSettings, storedRooms,
         storedCommunityGoals, storedChallenges, storedSnapshots, storedTimers,
         storedOnboarding, storedMeter, storedPoints, storedInsights, storedCertificates,
-        storedBills, storedChat, storedSmartHome,
+        storedBills, storedChat, storedSmartHome, storedDemo,
       ] = await Promise.all([
         read(STORAGE_KEYS.APPLIANCES),
         read(STORAGE_KEYS.USAGE_RECORDS),
@@ -774,6 +796,7 @@ export const useEnergyStore = create<EnergyStore>((set, get) => {
         read(STORAGE_KEYS.BILLS),
         read(STORAGE_KEYS.CHAT),
         read(STORAGE_KEYS.SMART_HOME),
+        read(STORAGE_KEYS.DEMO),
       ]);
 
       const homeSettings = parseStored<Partial<AppSettings>>(storedSettings, {});
@@ -823,6 +846,7 @@ export const useEnergyStore = create<EnergyStore>((set, get) => {
         friends: parseStored(rawFriends, []),
         profileId,
         hasSeenOnboarding: storedOnboarding === 'true',
+        isDemoData: storedDemo === 'true',
       });
 
       // After load, fetch weather in the background (never blocks startup)
@@ -841,6 +865,8 @@ export const useEnergyStore = create<EnergyStore>((set, get) => {
     } catch (error) {
       console.error('Error loading data:', error);
       if (get().isSwitchingHousehold) throw error;
+      // Stay on a failure screen instead of starting as a brand-new install over unread data
+      set({ loadError: error instanceof Error && error.message ? error.message : 'Could not read saved data.' });
     } finally {
       set({ isLoading: false });
     }
@@ -848,7 +874,8 @@ export const useEnergyStore = create<EnergyStore>((set, get) => {
 
   loadDemoData: async () => {
     const { appliances, usageRecords, rooms } = generateDemoData(get().settings);
-    set({ appliances, usageRecords });
+    set({ appliances, usageRecords, isDemoData: true });
+    await writeHomeData(STORAGE_KEYS.DEMO, 'true');
     await writeHomeData(STORAGE_KEYS.APPLIANCES, JSON.stringify(appliances));
     await writeHomeData(STORAGE_KEYS.USAGE_RECORDS, JSON.stringify(usageRecords));
     if (get().rooms.length === 0) {
@@ -874,6 +901,20 @@ export const useEnergyStore = create<EnergyStore>((set, get) => {
     await updateStreak();
     refreshDashboard();
     return newAppliance.id;
+  },
+
+  addAppliances: async (items) => {
+    if (items.length === 0) return [];
+    const { appliances } = get();
+    const createdAt = new Date().toISOString();
+    const created: Appliance[] = items.map((item) => ({ ...item, id: uid('appliance'), createdAt }));
+    const updated = [...appliances, ...created];
+    set({ appliances: updated });
+    await writeHomeData(STORAGE_KEYS.APPLIANCES, JSON.stringify(updated));
+    if (appliances.length === 0) await get().awardBadge('badge-1');
+    await get().updateStreak();
+    get().refreshDashboard();
+    return created.map((appliance) => appliance.id);
   },
 
   updateAppliance: async (id, updates) => {
@@ -1397,6 +1438,7 @@ export const useEnergyStore = create<EnergyStore>((set, get) => {
   },
 
   issueSavingsCertificate: async () => {
+    if (get().isDemoData) throw new Error('Certificates need real measured savings. Clear the sample data first.');
     const { usageRecords, certificates, settings } = get();
     const draft = draftCertificate(usageRecords, certificates, settings, today());
     if (!draft) {

@@ -20,7 +20,17 @@ export type HardwareProvider = 'home-assistant' | 'shelly' | 'virtual';
 export interface HardwareLink {
   provider: HardwareProvider;
   deviceId: string;
+  /** Home Assistant: the sensor that reports this plug's live watts. */
   powerSensorId?: string;
+  /** Home Assistant: the kWh/Wh counter used to turn plug data into measured days. */
+  energySensorId?: string;
+  /** Shelly: where to reach the device and how to talk to it. */
+  host?: string;
+  channel?: number;
+  generation?: 1 | 2;
+  /** Device name at the time of linking, shown when the plug is offline. */
+  label?: string;
+  linkedAt?: string;
 }
 
 export enum ApplianceCategory {
@@ -67,6 +77,12 @@ export interface UsageRecord {
   baselineKwh?: number;
   /** Hours each appliance actually ran that day (logged records). */
   applianceHours?: Record<string, number>;
+  /** kWh measured by a linked smart plug per appliance (smart-plug records). */
+  plugKwh?: Record<string, number>;
+  /** How many of the home's appliances a smart-plug day actually measured. */
+  plugCoverage?: { linked: number; total: number };
+  /** Nobody was home: the day is kept as a real measurement but never counts as a saving or a typical day. */
+  away?: boolean;
   note?: string;
 }
 
@@ -185,13 +201,32 @@ export interface Badge {
   isEarned: boolean;
 }
 
+/** One day of observed or forecast temperatures (local day at the weather location). */
+export interface WeatherDay {
+  date: string; // yyyy-MM-dd
+  mean: number | null;
+  min: number | null;
+  max: number | null;
+}
+
 export interface WeatherData {
   temperature: number;
   condition: string;
   humidity: number;
   season: 'spring' | 'summer' | 'fall' | 'winter';
   location: string;
-  source: 'live' | 'fallback';
+  /** live: fetched just now; cached: the last good reading kept for offline use (see fetchedAt). */
+  source: 'live' | 'cached';
+  /** ISO time the reading was fetched. */
+  fetchedAt?: string;
+  latitude?: number;
+  longitude?: number;
+  feelsLike?: number;
+  /** Today's range. */
+  tempMin?: number;
+  tempMax?: number;
+  /** Recent days plus the next few (for degree-day insights). */
+  daily?: WeatherDay[];
 }
 
 export interface ChatMessage {
@@ -219,11 +254,25 @@ export interface AppSettings {
   geminiModel?: string;
   /** Name shown on share codes, the leaderboard and shared goals. Device-level. */
   displayName?: string;
+  /** People living in the home (1-12); asked during setup. */
+  householdSize?: number;
+  homeType?: 'Apartment' | 'House' | 'Studio';
+  /** Id of the region preset chosen in setup (see services/onboarding/regions). */
+  region?: string;
+  /** 'system' follows the OS; undefined keeps the legacy darkMode toggle. Device-level. */
+  themeMode?: 'system' | 'light' | 'dark';
+  /** True once the user confirmed their tariff (in setup or Settings). */
+  tariffConfirmed?: boolean;
+  /** Set when the first-run setup finished (or was skipped). */
+  setupCompletedAt?: string;
+  /** User hid the dashboard setup checklist. Device-level. */
+  setupDismissed?: boolean;
 }
 
 /** Settings that belong to the device/person rather than to one home. */
 export const DEVICE_SETTING_KEYS = [
   'darkMode', 'notificationsEnabled', 'voiceEnabled', 'geminiApiKey', 'geminiModel', 'displayName',
+  'themeMode', 'setupDismissed',
 ] as const;
 export type DeviceSettingKey = typeof DEVICE_SETTING_KEYS[number];
 
@@ -429,6 +478,18 @@ export interface ShellyDevice {
   name: string;
   host: string; // IP or hostname on the local network
   generation: 1 | 2;
+  /** Relay/meter channel this entry points at (0 when omitted). */
+  channel?: number;
+  /** The device asked for a password (the password itself is never stored here). */
+  auth?: boolean;
+}
+
+/** A cumulative energy reading from a plug or meter, used to measure usage while the app is closed. */
+export interface CounterSnapshot {
+  at: string; // ISO date-time of the reading
+  totalWh: number;
+  /** When the device says its counter was last zeroed (Home Assistant last_reset). */
+  resetAt?: string;
 }
 
 export interface SmartHomeConfig {
@@ -436,4 +497,11 @@ export interface SmartHomeConfig {
   /** Home Assistant base URL (the token is never stored). */
   haUrl?: string;
   shellyDevices: ShellyDevice[];
+  /** Energy counter history per linked device, keyed by provider and device id. */
+  counters?: Record<string, CounterSnapshot[]>;
+  lastDeviceId?: Partial<Record<HardwareProvider, string>>;
+  lastSensorId?: Partial<Record<HardwareProvider, string>>;
+  /** The owner opted in to keeping the Home Assistant token on this phone (never exported or synced). */
+  rememberToken?: boolean;
+  lastConnectedAt?: Partial<Record<HardwareProvider, string>>;
 }

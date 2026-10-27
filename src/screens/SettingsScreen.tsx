@@ -1,15 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TextInput, Switch, Alert, TouchableOpacity,
+  View, Text, StyleSheet, ScrollView, TextInput, Switch, Alert, TouchableOpacity, Share,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useEnergy } from '../context/EnergyContext';
+import { useEnergyStore } from '../store/energyStore';
 import { ThemeColors, useTheme, useThemedStyles } from '../context/ThemeContext';
 import AccessibleTouchable from '../components/AccessibleTouchable';
 import FocusAwareStatusBar from '../components/FocusAwareStatusBar';
 import { validateGeminiKey, getActiveGeminiModel } from '../services/GeminiService';
 import { Typography, Spacing, Radius, Shadows } from '../theme';
+
+const REGIONAL_PRESETS = [
+  { label: '🇺🇸 US', rate: '0.16', currency: '$', name: 'United States' },
+  { label: '🇪🇺 Europe', rate: '0.28', currency: '€', name: 'Eurozone' },
+  { label: '🇬🇧 UK', rate: '0.245', currency: '£', name: 'United Kingdom' },
+  { label: '🇮🇳 India', rate: '7.50', currency: '₹', name: 'India' },
+  { label: '🇦🇺 Australia', rate: '0.32', currency: 'A$', name: 'Australia' },
+  { label: '🇨🇦 Canada', rate: '0.14', currency: 'C$', name: 'Canada' },
+];
 
 const TOGGLES = [
   { label: 'Dark Mode', desc: 'Switch to dark theme', hint: 'Switches the app between the light and dark theme', key: 'darkMode' as const, icon: '🌙' },
@@ -103,6 +113,60 @@ const SettingsScreen = () => {
     setTestFeedback(null);
   };
 
+  const handleSelectPreset = (p: typeof REGIONAL_PRESETS[0]) => {
+    setRate(p.rate);
+    setCurrency(p.currency);
+    Alert.alert(
+      'Preset Applied',
+      `Applied ${p.name} standard (${p.currency}${p.rate}/kWh). Tap Save Settings below to confirm.`,
+    );
+  };
+
+  const handleResetDefaults = () => {
+    Alert.alert(
+      'Reset Energy Defaults',
+      'Reset electricity rate to $0.15/kWh and CO₂ emission factor to 0.85 kg/kWh?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset to Defaults',
+          style: 'destructive',
+          onPress: () => {
+            setRate('0.15');
+            setCurrency('$');
+            setCo2Factor('0.85');
+            Alert.alert('Reset', 'Values set to standard defaults. Tap Save Settings to apply.');
+          },
+        },
+      ],
+    );
+  };
+
+  const handleExportData = async () => {
+    try {
+      const state = useEnergyStore.getState();
+      const exportPayload = {
+        app: 'SaveVolt',
+        version: '1.0.0',
+        exportedAt: new Date().toISOString(),
+        settings: state.settings,
+        appliances: state.appliances,
+        goals: state.goals,
+        reminders: state.reminders,
+        bills: state.bills,
+        badges: state.badges,
+        rooms: state.rooms,
+      };
+      const jsonStr = JSON.stringify(exportPayload, null, 2);
+      await Share.share({
+        title: 'SaveVolt Complete Backup Export',
+        message: jsonStr,
+      });
+    } catch {
+      Alert.alert('Export Failed', 'Could not share the backup export payload.');
+    }
+  };
+
   const hasKey = geminiKey.trim().length > 0;
 
   return (
@@ -117,6 +181,26 @@ const SettingsScreen = () => {
         {/* Energy */}
         <Text style={s.secTitle} accessibilityRole="header">Energy</Text>
         <View style={s.card}>
+          <Text style={s.subLabel}>Quick Regional Presets</Text>
+          <View style={s.presetGrid}>
+            {REGIONAL_PRESETS.map((p) => {
+              const isSelected = rate === p.rate && currency === p.currency;
+              return (
+                <TouchableOpacity
+                  key={p.label}
+                  style={[s.presetChip, isSelected && s.presetChipSelected]}
+                  onPress={() => handleSelectPreset(p)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Apply ${p.name} standard preset`}
+                >
+                  <Text style={[s.presetChipText, isSelected && s.presetChipTextSelected]}>
+                    {p.label} ({p.currency}{p.rate})
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
           <Text style={s.label}>Electricity Rate (per kWh)</Text>
           <TextInput
             style={s.input}
@@ -142,6 +226,15 @@ const SettingsScreen = () => {
             keyboardAppearance={keyboardAppearance}
             accessibilityLabel="Currency symbol"
           />
+          <TouchableOpacity
+            style={s.resetDefaultsBtn}
+            onPress={handleResetDefaults}
+            accessibilityRole="button"
+            accessibilityLabel="Reset to standard defaults"
+          >
+            <Icon name="refresh" size={14} color={colors.textSecondary} />
+            <Text style={s.resetDefaultsText}>Reset to Standard Defaults ($0.15/kWh)</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Location */}
@@ -315,6 +408,26 @@ const SettingsScreen = () => {
           </LinearGradient>
         </AccessibleTouchable>
 
+        {/* Data & Backup */}
+        <Text style={s.secTitle} accessibilityRole="header">Data & Backup</Text>
+        <View style={s.card}>
+          <Text style={s.label}>Full Snapshot Backup (JSON)</Text>
+          <Text style={s.hint}>
+            Export your appliances, usage logs, active goals, and configuration to an offline JSON snapshot.
+          </Text>
+          <AccessibleTouchable
+            label="Export full JSON backup"
+            hint="Shares your complete SaveVolt data snapshot"
+            style={{ marginTop: 12 }}
+            onPress={handleExportData}
+          >
+            <View style={s.exportBtn}>
+              <Icon name="download" size={18} color={colors.primary} />
+              <Text style={s.exportBtnText}>Export Full JSON Backup</Text>
+            </View>
+          </AccessibleTouchable>
+        </View>
+
         {/* About */}
         <View style={[s.card, s.aboutSection]} accessible>
           <Text style={s.aboutTitle}>SaveVolt</Text>
@@ -467,6 +580,56 @@ const createStyles = (c: ThemeColors) => StyleSheet.create({
   switchDesc: { ...Typography.bodySmall, color: c.textSecondary, marginTop: 1 },
   saveBtn: { borderRadius: Radius.md, paddingVertical: 16, alignItems: 'center', marginTop: 24 },
   saveTxt: { ...Typography.h3, color: c.onPrimary },
+  subLabel: { ...Typography.bodySmall, color: c.textSecondary, marginBottom: 8, fontWeight: '600' },
+  presetGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 },
+  presetChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: Radius.pill,
+    backgroundColor: c.inputBg,
+    borderWidth: 1,
+    borderColor: c.border,
+  },
+  presetChipSelected: {
+    backgroundColor: c.primary,
+    borderColor: c.primary,
+  },
+  presetChipText: {
+    fontSize: 12,
+    color: c.text,
+    fontWeight: '600',
+  },
+  presetChipTextSelected: {
+    color: c.onPrimary,
+  },
+  resetDefaultsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 12,
+    paddingVertical: 4,
+  },
+  resetDefaultsText: {
+    fontSize: 12,
+    color: c.textSecondary,
+    fontWeight: '500',
+  },
+  exportBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: c.primary,
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+  },
+  exportBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: c.primary,
+  },
   aboutTitle: { ...Typography.h2, color: c.text, marginBottom: 8 },
   aboutBody: { ...Typography.bodySmall, color: c.textSecondary, textAlign: 'center', lineHeight: 18 },
 });

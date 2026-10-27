@@ -72,12 +72,14 @@ const describeHotspot = (hotspot: RoomHotspot, currency: string, digits = 0) =>
   `${hotspot.percentage.toFixed(digits)}% of total energy, ${hotspot.level.name.toLowerCase()} usage`;
 
 const EnergyMapScreen = () => {
-  const { appliances, settings, rooms, addRoom, assignApplianceToRoom } = useEnergy(
+  const { appliances, settings, rooms, addRoom, assignApplianceToRoom, toggleAppliance, updateAppliance } = useEnergy(
     'appliances',
     'settings',
     'rooms',
     'addRoom',
     'assignApplianceToRoom',
+    'toggleAppliance',
+    'updateAppliance',
   );
   const { electricityRate, currency } = settings;
   const { colors, isDark } = useTheme();
@@ -176,6 +178,21 @@ const EnergyMapScreen = () => {
       assignApplianceToRoom(applianceId, assignRoomId);
     }
     setShowAssignModal(false);
+  };
+
+
+  const hasActiveInSelectedRoom = useMemo(() => {
+    if (!selectedHotspot) return false;
+    return selectedHotspot.appliances.some((a) => a.isActive !== false);
+  }, [selectedHotspot]);
+
+  const handleToggleRoomAll = async (turnOn: boolean) => {
+    if (!selectedHotspot) return;
+    for (const app of selectedHotspot.appliances) {
+      if ((app.isActive !== false) !== turnOn) {
+        await updateAppliance(app.id, { isActive: turnOn });
+      }
+    }
   };
 
   const handleRoomPress = (roomId: string) => {
@@ -368,6 +385,20 @@ const EnergyMapScreen = () => {
                 </LinearGradient>
               </AccessibleTouchable>
             </View>
+            {selectedHotspot.appliances.length > 0 && (
+              <View style={s.roomMasterControlsRow}>
+                <AccessibleTouchable
+                  label={`Turn all devices ${hasActiveInSelectedRoom ? 'off' : 'on'} in ${selectedHotspot.roomName}`}
+                  style={[s.roomMasterBtn, { backgroundColor: hasActiveInSelectedRoom ? colors.dangerSoft : colors.primaryLight }]}
+                  onPress={() => handleToggleRoomAll(!hasActiveInSelectedRoom)}
+                >
+                  <Text style={[s.roomMasterBtnText, { color: hasActiveInSelectedRoom ? colors.danger : colors.primaryText }]}>
+                    {hasActiveInSelectedRoom ? '⚡ Turn All Off in this Room' : '🔌 Turn All On in this Room'}
+                  </Text>
+                </AccessibleTouchable>
+              </View>
+            )}
+
             {selectedHotspot.appliances.length === 0 ? (
               <EmptyState
                 variant="inline"
@@ -383,15 +414,28 @@ const EnergyMapScreen = () => {
             ) : (
               selectedHotspot.appliances.map((appliance) => {
                 const monthly = formatEnergy((dailyKwhById.get(appliance.id) ?? 0) * 30);
+                const isOn = appliance.isActive !== false;
                 return (
                   <View
                     key={appliance.id}
                     style={s.applianceItem}
                     accessible
-                    accessibilityLabel={`${appliance.name}: ${monthly} per month`}
+                    accessibilityLabel={`${appliance.name}: ${monthly} per month, currently ${isOn ? 'on' : 'off'}`}
                   >
-                    <Text style={s.applianceName}>{appliance.name}</Text>
-                    <Text style={s.applianceConsumption}>{monthly}/mo</Text>
+                    <View style={s.applianceItemInfo}>
+                      <Text style={s.applianceName}>{appliance.name}</Text>
+                      <Text style={s.applianceConsumption}>{appliance.powerRating}W · {monthly}/mo</Text>
+                    </View>
+                    <AccessibleTouchable
+                      label={isOn ? `Turn off ${appliance.name}` : `Turn on ${appliance.name}`}
+                      hint="Toggles this appliance active state"
+                      style={[s.deviceToggleBtn, isOn ? s.deviceToggleOn : s.deviceToggleOff]}
+                      onPress={() => toggleAppliance(appliance.id)}
+                    >
+                      <Text style={[s.deviceToggleText, isOn ? s.deviceToggleTextOn : s.deviceToggleTextOff]}>
+                        {isOn ? '🟢 ON' : '⚪ OFF'}
+                      </Text>
+                    </AccessibleTouchable>
                   </View>
                 );
               })
@@ -638,6 +682,47 @@ const createStyles = (c: ThemeColors) => StyleSheet.create({
   assignButtonText: {
     ...Typography.labelSmall,
     color: c.onPrimary,
+  },
+  roomMasterControlsRow: {
+    marginBottom: Spacing.md,
+  },
+  roomMasterBtn: {
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.pill,
+    alignItems: 'center',
+  },
+  roomMasterBtnText: {
+    ...Typography.labelSmall,
+    fontWeight: '700',
+  },
+  applianceItemInfo: {
+    flex: 1,
+    marginRight: Spacing.sm,
+  },
+  deviceToggleBtn: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 6,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+  },
+  deviceToggleOn: {
+    backgroundColor: c.successSoft,
+    borderColor: c.success,
+  },
+  deviceToggleOff: {
+    backgroundColor: c.background,
+    borderColor: c.border,
+  },
+  deviceToggleText: {
+    ...Typography.labelSmall,
+    fontWeight: '700',
+  },
+  deviceToggleTextOn: {
+    color: c.success,
+  },
+  deviceToggleTextOff: {
+    color: c.textMuted,
   },
   applianceItem: {
     flexDirection: 'row',
